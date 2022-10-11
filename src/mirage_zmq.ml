@@ -560,7 +560,8 @@ end = struct
     ; mutable metadata: socket_metadata
     ; security_mechanism: mechanism_type
     ; mutable security_info: security_data
-    ; mutable connections: Connection.t Queue.t
+    ; connections: Connection.t Queue.t
+    ; connections_condition: unit Lwt_condition.t
     ; mutable socket_states: socket_states
     ; mutable incoming_queue_size: int option
     ; mutable outgoing_queue_size: int option }
@@ -744,26 +745,47 @@ end = struct
     get_reverse_frame_list_accumu []
     |> Lwt.map (Option.map List.rev)
 
+
+  let wait_for_message (connections, connections_condition) =
+    Lwt.choose (
+      Lwt_condition.wait connections_condition ::
+      (Queue.to_seq connections
+      |> Seq.filter_map (fun connection -> 
+        if Connection.get_stage connection = TRAFFIC then
+          Some (
+            Lwt_stream.last_new (Connection.get_read_buffer connection) 
+            |> Lwt.map ignore)
+        else
+          None)
+      |> List.of_seq))
+  
+  
   (* receive from the first available connection in the queue and rotate the queue once after receving *)
-  let rec receive_and_rotate connections =
-    if Queue.is_empty connections then
-      Lwt.pause () >>= fun () -> receive_and_rotate connections
-    else
-      find_connection_with_incoming_buffer connections
-      >>= function
-      | None ->
-          Lwt.pause () >>= fun () -> receive_and_rotate connections
-      | Some connection -> (
-          (* Reconstruct message from the connection *)
-          get_frame_list connection
-          >>= function
-          | None ->
-              Connection.close connection ;
-              rotate connections true ;
-              Lwt.pause () >>= fun () -> receive_and_rotate connections
-          | Some frames ->
-              rotate connections false ;
-              Lwt.return (Data (Frame.splice_message_frames frames)) )
+  let receive_and_rotate (connections, connections_condition) =
+    let rec loop () = 
+      Logs.debug (fun f -> f "receive_and_rotate");
+      if Queue.is_empty connections then
+        let* () = wait_for_message (connections, connections_condition) in
+        loop ()
+      else
+        find_connection_with_incoming_buffer connections
+        >>= function
+        | None -> 
+          let* () = wait_for_message (connections, connections_condition) in
+          loop ()
+        | Some connection -> (
+            (* Reconstruct message from the connection *)
+            get_frame_list connection
+            >>= function
+            | None ->
+                Connection.close connection ;
+                rotate connections true ;
+                loop ()
+            | Some frames ->
+                rotate connections false ;
+                Lwt.return (Data (Frame.splice_message_frames frames)) )
+    in
+    loop ()
 
   (* Get the address envelope from the read buffer, stop when the empty delimiter is encountered and discard the delimiter.connections
   Return None if stream closed
@@ -848,6 +870,7 @@ end = struct
         ; security_mechanism= mechanism
         ; security_info= Null
         ; connections= Queue.create ()
+        ; connections_condition = Lwt_condition.create ()
         ; socket_states=
             Rep
               { if_received= false
@@ -861,6 +884,7 @@ end = struct
         ; security_mechanism= mechanism
         ; security_info= Null
         ; connections= Queue.create ()
+        ; connections_condition = Lwt_condition.create ()
         ; socket_states= Req {if_sent= false; last_sent_connection_tag= ""}
         ; incoming_queue_size= None
         ; outgoing_queue_size= None }
@@ -870,6 +894,7 @@ end = struct
         ; security_mechanism= mechanism
         ; security_info= Null
         ; connections= Queue.create ()
+        ; connections_condition = Lwt_condition.create ()
         ; socket_states= Dealer {request_order_queue= Queue.create ()}
         ; incoming_queue_size= Some (Context.get_default_queue_size context)
         ; outgoing_queue_size= Some (Context.get_default_queue_size context) }
@@ -879,6 +904,7 @@ end = struct
         ; security_mechanism= mechanism
         ; security_info= Null
         ; connections= Queue.create ()
+        ; connections_condition = Lwt_condition.create ()
         ; socket_states= Router
         ; incoming_queue_size= Some (Context.get_default_queue_size context)
         ; outgoing_queue_size= Some (Context.get_default_queue_size context) }
@@ -888,6 +914,7 @@ end = struct
         ; security_mechanism= mechanism
         ; security_info= Null
         ; connections= Queue.create ()
+        ; connections_condition = Lwt_condition.create ()
         ; socket_states= Pub
         ; incoming_queue_size= Some (Context.get_default_queue_size context)
         ; outgoing_queue_size= Some (Context.get_default_queue_size context) }
@@ -897,6 +924,7 @@ end = struct
         ; security_mechanism= mechanism
         ; security_info= Null
         ; connections= Queue.create ()
+        ; connections_condition = Lwt_condition.create ()
         ; socket_states= Xpub
         ; incoming_queue_size= Some (Context.get_default_queue_size context)
         ; outgoing_queue_size= Some (Context.get_default_queue_size context) }
@@ -906,6 +934,7 @@ end = struct
         ; security_mechanism= mechanism
         ; security_info= Null
         ; connections= Queue.create ()
+        ; connections_condition = Lwt_condition.create ()
         ; socket_states= Sub {subscriptions= Utils.Trie.create ()}
         ; incoming_queue_size=
             Some (Context.get_default_queue_size context)
@@ -917,6 +946,7 @@ end = struct
         ; security_mechanism= mechanism
         ; security_info= Null
         ; connections= Queue.create ()
+        ; connections_condition = Lwt_condition.create ()
         ; socket_states= Xsub {subscriptions= Utils.Trie.create ()}
         ; incoming_queue_size= Some (Context.get_default_queue_size context)
         ; outgoing_queue_size= Some (Context.get_default_queue_size context) }
@@ -926,6 +956,7 @@ end = struct
         ; security_mechanism= mechanism
         ; security_info= Null
         ; connections= Queue.create ()
+        ; connections_condition = Lwt_condition.create ()
         ; socket_states= Push
         ; incoming_queue_size= None
         ; outgoing_queue_size= Some (Context.get_default_queue_size context) }
@@ -935,6 +966,7 @@ end = struct
         ; security_mechanism= mechanism
         ; security_info= Null
         ; connections= Queue.create ()
+        ; connections_condition = Lwt_condition.create ()
         ; socket_states= Pull
         ; incoming_queue_size= Some (Context.get_default_queue_size context)
         ; outgoing_queue_size= None }
@@ -944,10 +976,11 @@ end = struct
         ; security_mechanism= mechanism
         ; security_info= Null
         ; connections= Queue.create ()
+        ; connections_condition = Lwt_condition.create ()
         ; socket_states= Pair {connected= false}
         ; incoming_queue_size= Some (Context.get_default_queue_size context)
         ; outgoing_queue_size= Some (Context.get_default_queue_size context) }
-
+ 
   let set_plain_credentials t name password =
     if t.security_mechanism = PLAIN then
       t.security_info <- Plain_client (name, password)
@@ -1159,19 +1192,19 @@ end = struct
     | SUB -> (
       match t.socket_states with
       | Sub {subscriptions= _} ->
-          receive_and_rotate t.connections
+          receive_and_rotate (t.connections, t.connections_condition)
       | _ ->
           raise Should_Not_Reach )
     | XPUB -> (
       match t.socket_states with
       | Xpub ->
-          receive_and_rotate t.connections
+          receive_and_rotate (t.connections, t.connections_condition)
       | _ ->
           raise Should_Not_Reach )
     | XSUB -> (
       match t.socket_states with
       | Xsub {subscriptions= _} ->
-          receive_and_rotate t.connections
+          receive_and_rotate (t.connections, t.connections_condition)
       | _ ->
           raise Should_Not_Reach )
     | PUSH ->
@@ -1179,7 +1212,7 @@ end = struct
     | PULL -> (
       match t.socket_states with
       | Pull ->
-          receive_and_rotate t.connections
+          receive_and_rotate (t.connections, t.connections_condition)
       | _ ->
           raise Should_Not_Reach )
     | PAIR -> (
@@ -1425,7 +1458,9 @@ end = struct
       (Logs.debug (fun f -> f "send_blocking: no available peers");
       Lwt.pause () >>= fun () -> send_blocking t msg)
 
-  let add_connection t connection = Queue.push connection t.connections
+  let add_connection t connection = 
+    Queue.push connection t.connections;
+    Lwt_condition.broadcast t.connections_condition ()
 
   let initial_traffic_messages t =
     match t.socket_type with
@@ -2048,7 +2083,7 @@ end = struct
                 false
           in
           if print_debug_logs then
-            Logs.debug (fun f -> f "Module Connection: Greeting -> FSM\n") ;
+            Logs.debug (fun f -> f "Module Connection: Greeting -> FSM") ;
           if if_pair then Socket.set_pair_connected t.socket true ;
           let len = Bytes.length bytes in
           let rec convert greeting_action_list =
@@ -2078,7 +2113,7 @@ end = struct
                   convert tl
               | Greeting.Ok ->
                   if print_debug_logs then
-                    Logs.debug (fun f -> f "Module Connection: Greeting OK\n") ;
+                    Logs.debug (fun f -> f "Module Connection: Greeting OK") ;
                   t.stage <- HANDSHAKE ;
                   if
                     Security_mechanism.if_send_command_after_greeting
@@ -2180,7 +2215,7 @@ end = struct
                 Lwt.return (action_list_1 @ action_list_2) )
       | HANDSHAKE -> (
           if print_debug_logs then
-            Logs.debug (fun f -> f "Module Connection: Handshake -> FSM\n") ;
+            Logs.debug (fun f -> f "Module Connection: Handshake -> FSM") ;
           let frames, fragment =
             Frame.list_of_bytes (Bytes.cat t.previous_fragment bytes)
           in
@@ -2208,7 +2243,7 @@ end = struct
                   | Security_mechanism.Ok ->
                       if print_debug_logs then
                         Logs.debug (fun f ->
-                            f "Module Connection: Handshake OK\n" ) ;
+                            f "Module Connection: Handshake OK" ) ;
                       t.stage <- TRAFFIC ;
                       let frames =
                         Socket.initial_traffic_messages t.socket
@@ -2236,7 +2271,7 @@ end = struct
                         if print_debug_logs then
                           Logs.debug (fun f ->
                               f
-                                "Module Connection: Ignore unknown property %s\n"
+                                "Module Connection: Ignore unknown property %s"
                                 name ) ;
                         convert tl ) )
               in
@@ -2245,7 +2280,7 @@ end = struct
               Lwt.return actions )
       | TRAFFIC -> (
           if print_debug_logs then
-            Logs.debug (fun f -> f "Module Connection: TRAFFIC -> FSM\n") ;
+            Logs.debug (fun f -> f "Module Connection: TRAFFIC -> FSM") ;
           let frames, fragment =
             Frame.list_of_bytes (Bytes.cat t.previous_fragment bytes)
           in
@@ -2304,7 +2339,6 @@ end = struct
     t.send_buffer.close ()
 
   let send t ?(wait_until_sent = false) msg_list =
-
     let* () = 
       Lwt_list.iter_s
         (fun x -> write_write_buffer t (Some (Frame.to_bytes x)))
@@ -2369,7 +2403,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
           let rec deal_with_action_list actions =
             match actions with
             | [] ->
-                Lwt.pause () >>= fun () -> process_input flow connection
+              process_input flow connection
             | hd :: tl -> (
               match hd with
               | Connection.Write b -> (
@@ -2377,7 +2411,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
                     Logs.debug (fun f ->
                         f
                           "Module Connection_tcp: Connection FSM Write %d bytes\n\
-                           %s\n"
+                           %s"
                           (Bytes.length b) (Utils.buffer_to_string b) ) ;
                   S.TCP.write flow (Cstruct.of_bytes b)
                   >>= function
@@ -2395,7 +2429,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
                     Logs.debug (fun f ->
                         f
                           "Module Connection_tcp: Connection FSM Close due \
-                           to: %s\n"
+                           to: %s"
                           s ) ;
                   Lwt.return_unit )
           in
@@ -2418,22 +2452,37 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
       if print_debug_logs then
           Logs.debug (fun f ->
               f
-                "Module Connection_tcp: Connection mailbox Write %d bytes\n\
-                  %s\n"
-                (Bytes.length data)
-                (Utils.buffer_to_string data) ) ;
-        S.TCP.write flow (Cstruct.of_bytes data)
-        >>= function
-        | Error _ ->
-            if print_debug_logs then
-              Logs.warn (fun f ->
-                  f
-                    "Module Connection_tcp: Error writing data to \
-                      established connection." ) ;
-            let+ () = Connection.write_read_buffer connection None in
-            Connection.close connection
-        | Ok () ->
-            process_output flow connection 
+                "Module Connection_tcp: Connection mailbox Write %d bytes"
+                (Bytes.length data)) ;
+      S.TCP.write flow (Cstruct.of_bytes data)
+      >>= function
+      | Error _ ->
+          if print_debug_logs then
+            Logs.warn (fun f ->
+                f
+                  "Module Connection_tcp: Error writing data to \
+                    established connection." ) ;
+          let+ () = Connection.write_read_buffer connection None in
+          Connection.close connection
+      | Ok () ->
+          process_output flow connection 
+
+
+  let process_input flow connection =
+    Lwt.catch 
+      (fun () -> process_input flow connection) 
+      (fun exn ->
+        (* TODO: close *) 
+        Logs.err (fun f -> f "Exception: %a" Fmt.exn exn); 
+        raise exn)
+
+  let process_output flow connection =
+    Lwt.catch 
+      (fun () -> process_output flow connection) 
+      (fun exn ->
+        (* TODO: close *) 
+        Logs.err (fun f -> f "Exception: %a" Fmt.exn exn); 
+        raise exn)
 
   (* End of helper functions *)
 
@@ -2474,7 +2523,10 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
         then (
           Socket.add_connection socket connection ;
           Lwt.join
-            [start_connection flow connection; process_output flow connection] )
+            [
+              start_connection flow connection; 
+              process_output flow connection
+            ] )
         else (
           Socket.add_connection socket connection ;
           start_connection flow connection ) ) ;
