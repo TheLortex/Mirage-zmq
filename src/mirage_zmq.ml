@@ -1881,10 +1881,8 @@ end = struct
         if Bytes.get b 0 = Char.chr 3 then
           ({t with state= VERSION_MAJOR}, Continue)
         else ({t with state= ERROR}, Error "Version-major is not 3.")
-    | VERSION_MAJOR, Recv_Vminor b ->
-        if Bytes.get b 0 = Char.chr 1 then
-          ({t with state= VERSION_MINOR}, Continue)
-        else ({t with state= ERROR}, Error "Version-minor is not 1.")
+    | VERSION_MAJOR, Recv_Vminor _b -> 
+      ({t with state= VERSION_MINOR}, Continue)
     | VERSION_MINOR, Recv_Mechanism b ->
         ( {t with state= MECHANISM}
         , Check_mechanism (Bytes.to_string (trim_mechanism b)) )
