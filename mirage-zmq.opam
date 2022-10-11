@@ -6,6 +6,7 @@ maintainer: "Huiyao Zheng <huiyaozheng@gmail.com>"
 authors: "Huiyao Zheng <huiyaozheng@gmail.com>"
 depends: [ 
   "ocaml" 
+  "dune"
   "lwt-dllist" 
   "tcpip" 
   "logs"
