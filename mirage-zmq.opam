@@ -4,6 +4,7 @@ version: "0.1"
 synopsis: "A 0MQ implementation for MirageOS"
 maintainer: "Huiyao Zheng <huiyaozheng@gmail.com>"
 authors: "Huiyao Zheng <huiyaozheng@gmail.com>"
+dev-repo: "https://github.com/TheLortex/Mirage-zmq"
 depends: [ 
   "ocaml" 
   "dune"
@@ -11,4 +12,7 @@ depends: [
   "tcpip" 
   "logs"
 ]
-build: [["dune" "subst"] {pinned} ["dune" "build" "-p" name "-j" jobs ]]
+build: [
+  ["dune" "subst"] {pinned} 
+  ["dune" "build" "-p" name "-j" jobs ]
+]
