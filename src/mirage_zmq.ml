@@ -689,7 +689,7 @@ end = struct
     if if_drop_head then ignore (Queue.pop connections)
     else Queue.push (Queue.pop connections) connections
 
-  (* connections is a queue of Connection.t ref. 
+  (* connections is a queue of Connection.t. 
     This functions returns the Connection.t with the compare function if found *)
   let find_connection connections comp =
     if not (Queue.is_empty connections) then
