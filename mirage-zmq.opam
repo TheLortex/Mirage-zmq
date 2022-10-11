@@ -4,5 +4,10 @@ version: "0.1"
 synopsis: "A 0MQ implementation for MirageOS"
 maintainer: "Huiyao Zheng <huiyaozheng@gmail.com>"
 authors: "Huiyao Zheng <huiyaozheng@gmail.com>"
-depends: [ "ocaml" "mirage" ]
+depends: [ 
+  "ocaml" 
+  "lwt-dllist" 
+  "tcpip" 
+  "logs"
+]
 build: [["dune" "subst"] {pinned} ["dune" "build" "-p" name "-j" jobs ]]

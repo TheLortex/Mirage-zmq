@@ -15,14 +15,14 @@
  *)
 open Lwt.Infix
 
-let print_debug_logs = false
+let print_debug_logs = true
 
 let default_queue_size = 1000
 
 exception No_Available_Peers
-
+(* 
 exception Not_Implemented
-
+ *)
 exception Should_Not_Reach
 
 exception Socket_Name_Not_Recognised
@@ -409,10 +409,10 @@ end
 
 module Message : sig
   type t
-
+(* 
   val of_string : ?if_long:bool -> ?if_more:bool -> string -> t
   (** Make a message from the string *)
-
+ *)
   val list_of_string : string -> t list
   (** Make a list of messages from the string to send *)
 
@@ -450,9 +450,9 @@ module Context : sig
 
   val get_default_queue_size : t -> int
   (** Get the default queue size for this context *)
-
+(* 
   val destroy_context : t -> unit
-  (** Destroy all sockets initialised by the context. All connections will be closed *)
+  (** Destroy all sockets initialised by the context. All connections will be closed *) *)
 end = struct
   type t = {mutable default_queue_size: int}
 
@@ -461,9 +461,9 @@ end = struct
   let set_default_queue_size context size = context.default_queue_size <- size
 
   let get_default_queue_size context = context.default_queue_size
-
+(* 
   (* TODO close all connections of sockets in the context *)
-  let destroy_context (t : t) = ()
+  let destroy_context (_t : t) = () *)
 end
 
 module rec Socket : sig
@@ -474,8 +474,8 @@ module rec Socket : sig
   val if_valid_socket_pair : socket_type -> socket_type -> bool
 
   val if_queue_size_limited : socket_type -> bool
-
-  val if_has_incoming_queue : socket_type -> bool
+(* 
+  val if_has_incoming_queue : socket_type -> bool *)
 
   val if_has_outgoing_queue : socket_type -> bool
 
@@ -484,9 +484,10 @@ module rec Socket : sig
 
   val get_metadata : t -> socket_metadata
   (** Get the metadata of the socket for handshake *)
-
-  val get_mechanism : t -> mechanism_type
+(* 
+  val get_mechanism : t -> mechanism_type 
   (** Get the security mechanism of the socket *)
+      *)
 
   val get_security_data : t -> security_data
   (** Get the security credentials of the socket *)
@@ -540,7 +541,7 @@ module rec Socket : sig
   (** Get the messages to send at the beginning of a connection, e.g. subscriptions *)
 end = struct
   type socket_states =
-    | NONE
+    (* | NONE *)
     | Rep of
         { if_received: bool
         ; last_received_connection_tag: string
@@ -638,18 +639,18 @@ end = struct
         true
     | PULL ->
         false
-
+(* 
   (** Whether the socket type has an incoming queue *)
   let if_has_incoming_queue socket =
     match socket with
     | REP | REQ | DEALER | ROUTER | PUB | SUB | XPUB | XSUB | PULL | PAIR ->
         true
     | PUSH ->
-        false
+        false *)
 
   (* If success, the connection at the front of the queue is available and returns it.
     Otherwise, return None *)
-  let rec find_available_connection connections =
+  let find_available_connection connections =
     if Queue.is_empty connections then None
     else
       let buffer_queue = Queue.create () in
@@ -672,7 +673,7 @@ end = struct
       rotate ()
 
   (** Put connection at the end of the list or remove the connection from the list *)
-  let rotate list connection if_remove_head =
+(*   let rotate list connection if_remove_head =
     let rec rotate_accumu list accumu =
       match list with
       | [] ->
@@ -683,7 +684,7 @@ end = struct
           else rotate_accumu tl (hd :: accumu)
     in
     List.rev (rotate_accumu list [])
-
+ *)
   let rotate connections if_drop_head =
     if if_drop_head then ignore (Queue.pop connections)
     else Queue.push (Queue.pop connections) connections
@@ -831,7 +832,7 @@ end = struct
       (Bytes.cat (Bytes.make 1 (Char.chr 0)) (Bytes.of_string content))
       ~if_more:false ~if_command:false
 
-  let rec send_message_to_all_active_connections connections frame =
+  let send_message_to_all_active_connections connections frame =
     Queue.iter
       (fun x ->
         if Connection.get_stage !x = TRAFFIC then
@@ -843,9 +844,9 @@ end = struct
   let get_socket_type t = t.socket_type
 
   let get_metadata t = t.metadata
-
+(* 
   let get_mechanism t = t.security_mechanism
-
+ *)
   let get_security_data t = t.security_info
 
   let get_incoming_queue_size t =
@@ -1051,9 +1052,9 @@ end = struct
     | _ ->
         raise
           (Incorrect_use_of_API "This socket does not support unsubscription!")
-
+(* 
   type queue_fold_type = UNINITIALISED | Result of Connection.t
-
+ *)
   let rec recv t =
     match t.socket_type with
     | REP -> (
@@ -1100,7 +1101,7 @@ end = struct
             raise
               (Incorrect_use_of_API "Need to send a request before receiving")
           else
-            let rec find_and_send connections =
+            let find_and_send connections =
               let head = !(Queue.peek connections) in
               if tag = Connection.get_tag head then
                 if Connection.get_stage head = TRAFFIC then (
@@ -1238,14 +1239,14 @@ end = struct
       match msg with
       | Data msg ->
           List.map (fun x -> Message.to_frame x) (Message.list_of_string msg)
-      | Identity_and_data (id, msg) ->
+      | Identity_and_data (_id, msg) ->
           List.map (fun x -> Message.to_frame x) (Message.list_of_string msg)
     in
     let rec try_send () =
       match t.socket_type with
       | REP -> (
         match msg with
-        | Data msg -> (
+        | Data _msg -> (
             let state = t.socket_states in
             match state with
             | Rep
@@ -1257,7 +1258,7 @@ end = struct
                     (Incorrect_use_of_API
                        "Need to receive a request before sending a message")
                 else
-                  let rec find_and_send connections =
+                  let find_and_send connections =
                     let head = !(Queue.peek connections) in
                     if tag = Connection.get_tag head then
                       if Connection.get_stage head = TRAFFIC then (
@@ -1284,7 +1285,7 @@ end = struct
             raise (Incorrect_use_of_API "REP sends [Data(string)]") )
       | REQ -> (
         match msg with
-        | Data msg -> (
+        | Data _msg -> (
             let state = t.socket_states in
             match state with
             | Req {if_sent; last_sent_connection_tag= _} -> (
@@ -1316,7 +1317,7 @@ end = struct
       | DEALER -> (
         (* TODO investigate DEALER dropping messages *)
         match msg with
-        | Data msg -> (
+        | Data _msg -> (
             let state = t.socket_states in
             match state with
             | Dealer {request_order_queue} -> (
@@ -1346,7 +1347,7 @@ end = struct
             raise (Incorrect_use_of_API "DEALER sends [Data(string)]") )
       | ROUTER -> (
         match msg with
-        | Identity_and_data (id, msg) -> (
+        | Identity_and_data (id, _msg) -> (
           match t.socket_states with
           | Router -> (
               find_connection t.connections (fun connection ->
@@ -1378,7 +1379,7 @@ end = struct
           | Pub ->
               broadcast t.connections msg (fun connection ->
                   Utils.Trie.find (Connection.get_subscriptions connection) msg
-              ) ;
+                ) ;
               Lwt.return_unit
           | _ ->
               raise Should_Not_Reach )
@@ -1412,7 +1413,7 @@ end = struct
             raise (Incorrect_use_of_API "XSUB accepts a message only!") )
       | PUSH -> (
         match msg with
-        | Data msg -> (
+        | Data _msg -> (
           match t.socket_states with
           | Push -> (
               if Queue.is_empty t.connections then raise No_Available_Peers
@@ -1434,7 +1435,7 @@ end = struct
           raise (Incorrect_use_of_API "Cannot send via PULL")
       | PAIR -> (
         match msg with
-        | Data msg -> (
+        | Data _msg -> (
           match t.socket_states with
           | Pair {connected} ->
               if Queue.is_empty t.connections then raise No_Available_Peers
@@ -1457,7 +1458,9 @@ end = struct
 
   let rec send_blocking t msg =
     try send t msg
-    with No_Available_Peers -> Lwt.pause () >>= fun () -> send_blocking t msg
+    with No_Available_Peers -> 
+      (Logs.debug (fun f -> f "send_blocking: no available peers");
+      Lwt.pause () >>= fun () -> send_blocking t msg)
 
   let add_connection t connection = Queue.push connection t.connections
 
@@ -1510,9 +1513,10 @@ and Security_mechanism : sig
 
   val init : security_data -> socket_metadata -> t
   (** Initialise a t from security mechanism data and socket metadata *)
-
+(* 
   val client_first_message : t -> bytes
   (** If the socket is a PLAIN mechanism client, it needs to send the HELLO command first *)
+ *)
 
   val first_command : t -> bytes
 
@@ -1814,14 +1818,14 @@ end = struct
     | Error of string
 
   type version = {major: bytes; minor: bytes}
-
+(* 
   type greeting =
     { signature: bytes
     ; version: version
     ; mechanism: string
     ; as_server: bool
     ; filler: bytes }
-
+ *)
   (* Start of helper functions *)
 
   (** Make the signature bytes *)
@@ -1880,9 +1884,9 @@ end = struct
           ({t with state= VERSION_MAJOR}, Continue)
         else ({t with state= ERROR}, Error "Version-major is not 3.")
     | VERSION_MAJOR, Recv_Vminor b ->
-        if Bytes.get b 0 = Char.chr 0 then
+        if Bytes.get b 0 = Char.chr 1 then
           ({t with state= VERSION_MINOR}, Continue)
-        else ({t with state= ERROR}, Error "Version-minor is not 0.")
+        else ({t with state= ERROR}, Error "Version-minor is not 1.")
     | VERSION_MINOR, Recv_Mechanism b ->
         ( {t with state= MECHANISM}
         , Check_mechanism (Bytes.to_string (trim_mechanism b)) )
@@ -2341,7 +2345,7 @@ end = struct
       Queue.length t.send_buffer >= Socket.get_outgoing_queue_size !(t.socket)
 end
 
-module Connection_tcp (S : Mirage_stack_lwt.V4) = struct
+module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
   (* Start of helper functions *)
 
   (** Creates a tag for a TCP connection *)
@@ -2350,7 +2354,7 @@ module Connection_tcp (S : Mirage_stack_lwt.V4) = struct
 
   (** Read input from flow, send the input to FSM and execute FSM actions *)
   let rec process_input flow connection =
-    S.TCPV4.read flow
+    S.TCP.read flow
     >>= function
     | Ok `Eof ->
         if print_debug_logs then
@@ -2365,14 +2369,14 @@ module Connection_tcp (S : Mirage_stack_lwt.V4) = struct
               f
                 "Module Connection_tcp: Error reading data from established \
                  connection: %a"
-                S.TCPV4.pp_error e ) ;
+                S.TCP.pp_error e ) ;
         ignore (Connection.fsm connection End_of_connection) ;
         Connection.close connection ;
         Lwt.return_unit
     | Ok (`Data b) ->
         if print_debug_logs then
           Logs.debug (fun f ->
-              f "Module Connection_tcp: Read: %d bytes:\n%s" (Cstruct.len b)
+              f "Module Connection_tcp: Read: %d bytes:\n%s" (Cstruct.length b)
                 (Utils.buffer_to_string (Cstruct.to_bytes b)) ) ;
         let bytes = Cstruct.to_bytes b in
         let rec act () =
@@ -2392,7 +2396,7 @@ module Connection_tcp (S : Mirage_stack_lwt.V4) = struct
                           "Module Connection_tcp: Connection FSM Write %d bytes\n\
                            %s\n"
                           (Bytes.length b) (Utils.buffer_to_string b) ) ;
-                  S.TCPV4.write flow (Cstruct.of_bytes b)
+                  S.TCP.write flow (Cstruct.of_bytes b)
                   >>= function
                   | Error _ ->
                       if print_debug_logs then
@@ -2427,7 +2431,7 @@ module Connection_tcp (S : Mirage_stack_lwt.V4) = struct
             Logs.debug (fun f ->
                 f "Module Connection_tcp: Connection was instructed to close"
             ) ;
-          S.TCPV4.close flow
+          S.TCP.close flow
       | Some data -> (
           if print_debug_logs then
             Logs.debug (fun f ->
@@ -2436,7 +2440,7 @@ module Connection_tcp (S : Mirage_stack_lwt.V4) = struct
                    %s\n"
                   (Bytes.length data)
                   (Utils.buffer_to_string data) ) ;
-          S.TCPV4.write flow (Cstruct.of_bytes data)
+          S.TCP.write flow (Cstruct.of_bytes data)
           >>= function
           | Error _ ->
               if print_debug_logs then
@@ -2455,7 +2459,7 @@ module Connection_tcp (S : Mirage_stack_lwt.V4) = struct
   (* End of helper functions *)
 
   let start_connection flow connection =
-    S.TCPV4.write flow
+    S.TCP.write flow
       (Cstruct.of_bytes (Connection.greeting_message connection))
     >>= function
     | Error _ ->
@@ -2470,20 +2474,21 @@ module Connection_tcp (S : Mirage_stack_lwt.V4) = struct
         process_input flow connection
 
   let listen s port socket =
-    S.listen_tcpv4 s ~port (fun flow ->
-        let dst, dst_port = S.TCPV4.dst flow in
+    S.TCP.listen (S.tcp s) ~port (fun flow ->
+        Logs.info (fun f -> f "client");
+        let dst, dst_port = S.TCP.dst flow in
         if print_debug_logs then
           Logs.debug (fun f ->
               f
                 "Module Connection_tcp: New tcp connection from IP %s on port \
                  %d"
-                (Ipaddr.V4.to_string dst) dst_port ) ;
+                (Ipaddr.to_string dst) dst_port ) ;
         let connection =
           Connection.init socket
             (Security_mechanism.init
                (Socket.get_security_data !socket)
                (Socket.get_metadata !socket))
-            (tag_of_tcp_connection (Ipaddr.V4.to_string dst) dst_port)
+            (tag_of_tcp_connection (Ipaddr.to_string dst) dst_port)
         in
         if
           Socket.if_has_outgoing_queue
@@ -2498,8 +2503,8 @@ module Connection_tcp (S : Mirage_stack_lwt.V4) = struct
     S.listen s
 
   let rec connect s addr port connection =
-    let ipaddr = Ipaddr.V4.of_string_exn addr in
-    S.TCPV4.create_connection (S.tcpv4 s) (ipaddr, port)
+    let ipaddr = Ipaddr.of_string_exn addr in
+    S.TCP.create_connection (S.tcp s) (ipaddr, port)
     >>= function
     | Ok flow ->
         let socket_type =
@@ -2523,11 +2528,11 @@ module Connection_tcp (S : Mirage_stack_lwt.V4) = struct
               f
                 "Module Connection_tcp: Error establishing connection: %a, \
                  retrying"
-                S.TCPV4.pp_error e ) ;
+                S.TCP.pp_error e ) ;
         connect s addr port connection
 end
 
-module Socket_tcp (S : Mirage_stack_lwt.V4) : sig
+module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
   type t
 
   val create_socket :
@@ -2568,8 +2573,8 @@ module Socket_tcp (S : Mirage_stack_lwt.V4) : sig
   val connect : t -> string -> int -> S.t -> unit Lwt.t
   (** Bind a connection to a remote TCP port to the socket *)
 end = struct
-  type transport_info = Tcp of string * int
-
+  (* type transport_info = Tcp of string * int
+ *)
   type t = {socket: Socket.t}
 
   let create_socket context ?(mechanism = NULL) socket_type =

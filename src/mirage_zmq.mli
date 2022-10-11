@@ -56,7 +56,7 @@ module Context : sig
 end
 
 (** Due to the characteristics of a unikernel, we need the network stack module to create TCP sockets *)
-module Socket_tcp (S : Mirage_stack_lwt.V4) : sig
+module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
   type t
 
   val create_socket :
