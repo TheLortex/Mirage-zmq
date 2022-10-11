@@ -1923,7 +1923,7 @@ and Connection : sig
 
   type action = Write of bytes | Close of string | Block
 
-  val init : Socket.t ref -> Security_mechanism.t -> string -> t
+  val init : Socket.t -> Security_mechanism.t -> string -> t
   (** Create a new connection for socket with specified security mechanism *)
 
   val get_tag : t -> string
@@ -1938,7 +1938,7 @@ and Connection : sig
   val get_stage : t -> connection_stage
   (** Get the stage of the connection. It is considered usable if in TRAFFIC *)
 
-  val get_socket : t -> Socket.t ref
+  val get_socket : t -> Socket.t
 
   val get_identity : t -> string
 
@@ -1966,7 +1966,7 @@ end = struct
 
   type t =
     { tag: string
-    ; socket: Socket.t ref
+    ; socket: Socket.t
     ; mutable greeting_state: Greeting.t
     ; mutable handshake_state: Security_mechanism.t
     ; mutable stage: connection_stage
@@ -2022,22 +2022,22 @@ end = struct
       match t.stage with
       | GREETING -> (
           let if_pair =
-            match Socket.get_socket_type !(t.socket) with
+            match Socket.get_socket_type t.socket with
             | PAIR ->
                 true
             | _ ->
                 false
           in
           let if_pair_already_connected =
-            match Socket.get_socket_type !(t.socket) with
+            match Socket.get_socket_type t.socket with
             | PAIR ->
-                Socket.get_pair_connected !(t.socket)
+                Socket.get_pair_connected t.socket
             | _ ->
                 false
           in
           if print_debug_logs then
             Logs.debug (fun f -> f "Module Connection: Greeting -> FSM\n") ;
-          if if_pair then Socket.set_pair_connected !(t.socket) true ;
+          if if_pair then Socket.set_pair_connected t.socket true ;
           let len = Bytes.length bytes in
           let rec convert greeting_action_list =
             match greeting_action_list with
@@ -2197,7 +2197,7 @@ end = struct
                             f "Module Connection: Handshake OK\n" ) ;
                       t.stage <- TRAFFIC ;
                       let frames =
-                        Socket.initial_traffic_messages !(t.socket)
+                        Socket.initial_traffic_messages t.socket
                       in
                       List.map (fun x -> Write (Frame.to_bytes x)) frames
                       @ convert tl
@@ -2208,7 +2208,7 @@ end = struct
                     | "Socket-Type" ->
                         if
                           Socket.if_valid_socket_pair
-                            (Socket.get_socket_type !(t.socket))
+                            (Socket.get_socket_type t.socket)
                             (Socket.socket_type_from_string value)
                         then (
                           t.incoming_socket_type
@@ -2269,11 +2269,11 @@ end = struct
           let enqueue () =
             (* Put the received frames into the buffer *)
             (* TODO limit incoming buffer *)
-            let socket_type = Socket.get_socket_type !(t.socket) in
+            let socket_type = Socket.get_socket_type t.socket in
             if Socket.if_queue_size_limited socket_type then
               if
                 Queue.length t.read_buffer
-                < Socket.get_incoming_queue_size !(t.socket)
+                < Socket.get_incoming_queue_size t.socket
               then (
                 List.iter (fun x -> Queue.push (Some x) t.read_buffer) frames ;
                 [] )
@@ -2282,7 +2282,7 @@ end = struct
               List.iter (fun x -> Queue.push (Some x) t.read_buffer) frames ;
               [] )
           in
-          match Socket.get_socket_type !(t.socket) with
+          match Socket.get_socket_type t.socket with
           | PUB ->
               manage_subscription () ; []
           | XPUB -> (
@@ -2301,14 +2301,14 @@ end = struct
 
   let close t =
     let if_pair =
-      match Socket.get_socket_type !(t.socket) with PAIR -> true | _ -> false
+      match Socket.get_socket_type t.socket with PAIR -> true | _ -> false
     in
-    if if_pair then Socket.set_pair_connected !(t.socket) false ;
+    if if_pair then Socket.set_pair_connected t.socket false ;
     t.stage <- CLOSED ;
     Queue.push None t.send_buffer
 
   let send t ?(wait_until_sent = false) msg_list =
-    if not (Socket.if_queue_size_limited (Socket.get_socket_type !(t.socket)))
+    if not (Socket.if_queue_size_limited (Socket.get_socket_type t.socket))
     then (
       (* Unbounded sending queue *)
       List.iter
@@ -2323,7 +2323,7 @@ end = struct
       else Lwt.return_unit )
     else if
       (* Sending queue of limited size *)
-      Queue.length t.send_buffer < Socket.get_outgoing_queue_size !(t.socket)
+      Queue.length t.send_buffer < Socket.get_outgoing_queue_size t.socket
     then (
       let bytes = List.map (fun x -> Frame.to_bytes x) msg_list in
       List.iter (fun x -> Queue.push (Some x) t.send_buffer) bytes ;
@@ -2338,10 +2338,10 @@ end = struct
       raise Queue_overflow
 
   let if_send_queue_full t =
-    if not (Socket.if_queue_size_limited (Socket.get_socket_type !(t.socket)))
+    if not (Socket.if_queue_size_limited (Socket.get_socket_type t.socket))
     then false
     else
-      Queue.length t.send_buffer >= Socket.get_outgoing_queue_size !(t.socket)
+      Queue.length t.send_buffer >= Socket.get_outgoing_queue_size t.socket
 end
 
 module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
@@ -2485,19 +2485,19 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
         let connection =
           Connection.init socket
             (Security_mechanism.init
-               (Socket.get_security_data !socket)
-               (Socket.get_metadata !socket))
+               (Socket.get_security_data socket)
+               (Socket.get_metadata socket))
             (tag_of_tcp_connection (Ipaddr.to_string dst) dst_port)
         in
         if
           Socket.if_has_outgoing_queue
-            (Socket.get_socket_type !(Connection.get_socket connection))
+            (Socket.get_socket_type (Connection.get_socket connection))
         then (
-          Socket.add_connection !socket connection ;
+          Socket.add_connection socket connection ;
           Lwt.join
             [start_connection flow connection; process_output flow connection] )
         else (
-          Socket.add_connection !socket connection ;
+          Socket.add_connection socket connection ;
           start_connection flow connection ) ) ;
     S.listen s
 
@@ -2507,7 +2507,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
     >>= function
     | Ok flow ->
         let socket_type =
-          Socket.get_socket_type !(Connection.get_socket connection)
+          Socket.get_socket_type (Connection.get_socket connection)
         in
         if Socket.if_has_outgoing_queue socket_type then
           Lwt.async (fun () ->
@@ -2604,12 +2604,12 @@ end = struct
 
   let bind t port s =
     let module C_tcp = Connection_tcp (S) in
-    Lwt.async (fun () -> C_tcp.listen s port (ref t.socket))
+    Lwt.async (fun () -> C_tcp.listen s port t.socket)
 
   let connect t ipaddr port s =
     let module C_tcp = Connection_tcp (S) in
     let connection =
-      Connection.init (ref t.socket)
+      Connection.init t.socket
         (Security_mechanism.init
            (Socket.get_security_data t.socket)
            (Socket.get_metadata t.socket))
