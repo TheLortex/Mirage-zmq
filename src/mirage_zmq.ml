@@ -63,7 +63,7 @@ type security_data =
 
 type connection_stage = GREETING | HANDSHAKE | TRAFFIC | CLOSED
 
-type connection_fsm_data = Input_data of Bytes.t | End_of_connection
+type connection_fsm_data = Input_data of Cstruct.t | End_of_connection
 
 module Utils = struct
   (** Convert a series of big-endian bytes to int *)
@@ -229,7 +229,7 @@ module Frame : sig
   val to_bytes : t -> Bytes.t
   (** Convert a frame to raw bytes *)
 
-  val list_of_bytes : Bytes.t -> t list * Bytes.t
+  val list_of_bytes : Cstruct.t list -> t list * Cstruct.t list
   (** Construct a list of frames from raw bytes and returns any remaining fragment *)
 
   val get_if_more : t -> bool
@@ -277,57 +277,81 @@ end = struct
       ; size_to_bytes t.size (Char.code t.flags land 2 = 2)
       ; t.body ]
 
+  
+    module Cstruct = struct
+      include Cstruct
+
+      let rec splitv buffers n =
+        match buffers with
+        | _ when n = 0 -> [], buffers
+        | [] (* n > 0 *) -> raise (Invalid_argument "too long")
+        | buffer :: next when length buffer <= n ->
+          let before, after = splitv next (n - length buffer) in
+          buffer :: before, after
+        | buffer :: next ->
+          let before, after = split buffer n in
+          [before], after :: next
+    
+    end
+
   let rec list_of_bytes bytes =
-    let total_length = Bytes.length bytes in
+    let total_length = Cstruct.lenv bytes in
     if total_length < 2 then ([], bytes)
     else
-      let flag = Char.code (Bytes.get bytes 0) in
+      let flag_buffer, bytes' = Cstruct.splitv bytes 1 in
+      let flag = Cstruct.get_byte (List.hd flag_buffer) 0 in
       let if_long = flag land 2 = 2 in
       if if_long then
         if (* long-size *)
            total_length < 9 then ([], bytes)
         else
-          let content_length =
-            Utils.network_order_to_int (Bytes.sub bytes 1 8)
+          let content_length_buffers, bytes'' = Cstruct.splitv bytes' 8 in
+          let content_length_buffer = 
+            Cstruct.concat content_length_buffers |> Cstruct.to_bytes 
+          in
+          let content_length = Utils.network_order_to_int content_length_buffer
           in
           if total_length < content_length + 9 then ([], bytes)
           else if total_length > content_length + 9 then
-            let list, remain =
-              list_of_bytes
-                (Bytes.sub bytes (content_length + 9)
-                   (total_length - content_length - 9))
+            let frame, bytes =
+              Cstruct.splitv bytes'' content_length
+            in
+            let list, remain = list_of_bytes bytes
             in
             ( { flags= Char.chr flag
               ; size= content_length
-              ; body= Bytes.sub bytes 9 content_length }
+              ; body= Cstruct.concat frame |> Cstruct.to_bytes }
               :: list
             , remain )
           else
             ( [ { flags= Char.chr flag
                 ; size= content_length
-                ; body= Bytes.sub bytes 9 content_length } ]
-            , Bytes.empty )
+                ; body= Cstruct.concat bytes'' |> Cstruct.to_bytes } ]
+            , [] )
       else
         (* short-size *)
-        let content_length = Char.code (Bytes.get bytes 1) in
+        let content_length_buffers, bytes'' = Cstruct.splitv bytes' 1 in
+        let content_length = 
+          Cstruct.get_byte (List.hd content_length_buffers) 0
+        in
         (* check length *)
         if total_length < content_length + 2 then ([], bytes)
         else if total_length > content_length + 2 then
-          let list, remain =
-            list_of_bytes
-              (Bytes.sub bytes (content_length + 2)
-                 (total_length - content_length - 2))
+          let frame, bytes =
+            Cstruct.splitv bytes'' content_length
+          in
+          let list, remain = list_of_bytes bytes
           in
           ( { flags= Char.chr flag
             ; size= content_length
-            ; body= Bytes.sub bytes 2 content_length }
+            ; body= Cstruct.concat frame |> Cstruct.to_bytes }
             :: list
           , remain )
         else
           ( [ { flags= Char.chr flag
               ; size= content_length
-              ; body= Bytes.sub bytes 2 content_length } ]
-          , Bytes.empty )
+              ; body= Cstruct.concat bytes'' |> Cstruct.to_bytes } ]
+          , [] )
 
   let get_if_more t = Char.code t.flags land 1 = 1
 
@@ -342,25 +366,11 @@ end = struct
   let delimiter_frame = {flags= Char.chr 1; size= 0; body= Bytes.empty}
 
   let splice_message_frames list =
-    let rec splice_message_frames_accumu list s =
-      match list with
-      | [] ->
-          s
-      | hd :: tl -> (
-        match tl with
-        | [] ->
-            if get_if_more hd then raise (Internal_Error "Missing frames")
-            else
-              splice_message_frames_accumu tl
-                (s ^ Bytes.to_string (get_body hd))
-        | _ ->
-            if not (get_if_more hd) then
-              raise (Internal_Error "Too many  frames")
-            else
-              splice_message_frames_accumu tl
-                (s ^ Bytes.to_string (get_body hd)) )
-    in
-    splice_message_frames_accumu list ""
+    List.rev_map get_body list 
+    |> List.rev
+    |> Bytes.concat Bytes.empty
+    |> Bytes.unsafe_to_string
+  
 end
 
 module Command : sig
@@ -733,8 +743,12 @@ end = struct
   Block if message not complete
   *)
   let get_frame_list connection =
+    Printf.printf "get_frame_list\n%!";
+    let i = ref 0 in
     let rec get_reverse_frame_list_accumu list =
       let* v = Lwt_stream.get (Connection.get_read_buffer connection) in
+      Printf.printf "get_frame_list: %d\n%!" !i;
+      incr i;
       match v with
       | None -> (* Stream closed *) Lwt.return_none
       | Some next_frame ->
@@ -768,12 +782,14 @@ end = struct
         let* () = wait_for_message (connections, connections_condition) in
         loop ()
       else
+        (Printf.printf "find_connection_with_incoming_buffer\n%!";
         find_connection_with_incoming_buffer connections
         >>= function
         | None -> 
           let* () = wait_for_message (connections, connections_condition) in
           loop ()
         | Some connection -> (
+          Printf.printf "got_connection\n%!";
             (* Reconstruct message from the connection *)
             get_frame_list connection
             >>= function
@@ -783,7 +799,7 @@ end = struct
                 loop ()
             | Some frames ->
                 rotate connections false ;
-                Lwt.return (Data (Frame.splice_message_frames frames)) )
+                Lwt.return (Data (Frame.splice_message_frames frames)) ))
     in
     loop ()
 
@@ -2002,8 +2018,8 @@ end = struct
     ; read_buffer: Frame.t buffer_stream
     ; send_buffer: Bytes.t buffer_stream
     ; mutable subscriptions: Utils.Trie.t
-    ; mutable previous_fragment: Bytes.t }
-  
+    ; mutable previous_fragments: Cstruct.t list }
+
   let init socket security_mechanism tag =
 
     let read_buffer =
@@ -2030,7 +2046,7 @@ end = struct
     ; read_buffer
     ; send_buffer
     ; subscriptions= Utils.Trie.create ()
-    ; previous_fragment= Bytes.empty }
+    ; previous_fragments= [] }
 
   let get_tag t = t.tag
 
@@ -2083,7 +2099,7 @@ end = struct
           if print_debug_logs then
             Logs.debug (fun f -> f "Module Connection: Greeting -> FSM") ;
           if if_pair then Socket.set_pair_connected t.socket true ;
-          let len = Bytes.length bytes in
+          let len = Cstruct.length bytes in
           let rec convert greeting_action_list =
             match greeting_action_list with
             | [] ->
@@ -2129,11 +2145,11 @@ end = struct
           | 64 ->
               let state, action_list =
                 Greeting.fsm t.greeting_state
-                  [ Greeting.Recv_sig (Bytes.sub bytes 0 10)
-                  ; Greeting.Recv_Vmajor (Bytes.sub bytes 10 1)
-                  ; Greeting.Recv_Vminor (Bytes.sub bytes 11 1)
-                  ; Greeting.Recv_Mechanism (Bytes.sub bytes 12 20)
-                  ; Greeting.Recv_as_server (Bytes.sub bytes 32 1)
+                  [ Greeting.Recv_sig (Cstruct.sub bytes 0 10 |> Cstruct.to_bytes)
+                  ; Greeting.Recv_Vmajor (Cstruct.sub bytes 10 1 |> Cstruct.to_bytes)
+                  ; Greeting.Recv_Vminor (Cstruct.sub bytes 11 1 |> Cstruct.to_bytes)
+                  ; Greeting.Recv_Mechanism (Cstruct.sub bytes 12 20 |> Cstruct.to_bytes)
+                  ; Greeting.Recv_as_server (Cstruct.sub bytes 32 1 |> Cstruct.to_bytes)
                   ; Greeting.Recv_filler ]
               in
               let connection_action = convert action_list in
@@ -2147,8 +2163,8 @@ end = struct
           | 11 ->
               let state, action_list =
                 Greeting.fsm t.greeting_state
-                  [ Greeting.Recv_sig (Bytes.sub bytes 0 10)
-                  ; Greeting.Recv_Vmajor (Bytes.sub bytes 10 1) ]
+                  [ Greeting.Recv_sig (Cstruct.sub bytes 0 10 |> Cstruct.to_bytes)
+                  ; Greeting.Recv_Vmajor (Cstruct.sub bytes 10 1 |> Cstruct.to_bytes) ]
               in
               if if_pair_already_connected then
                 Lwt.return [Close "This PAIR is already connected"]
@@ -2159,7 +2175,7 @@ end = struct
           (* Signature *)
           | 10 ->
               let state, action =
-                Greeting.fsm_single t.greeting_state (Greeting.Recv_sig bytes)
+                Greeting.fsm_single t.greeting_state (Greeting.Recv_sig (Cstruct.to_bytes bytes))
               in
               if if_pair_already_connected then
                 Lwt.return [Close "This PAIR is already connected"]
@@ -2171,9 +2187,9 @@ end = struct
           | 53 ->
               let state, action_list =
                 Greeting.fsm t.greeting_state
-                  [ Greeting.Recv_Vminor (Bytes.sub bytes 0 1)
-                  ; Greeting.Recv_Mechanism (Bytes.sub bytes 1 20)
-                  ; Greeting.Recv_as_server (Bytes.sub bytes 21 1)
+                  [ Greeting.Recv_Vminor (Cstruct.sub bytes 0 1 |> Cstruct.to_bytes)
+                  ; Greeting.Recv_Mechanism (Cstruct.sub bytes 1 20 |> Cstruct.to_bytes)
+                  ; Greeting.Recv_as_server (Cstruct.sub bytes 21 1 |> Cstruct.to_bytes)
                   ; Greeting.Recv_filler ]
               in
               let connection_action = convert action_list in
@@ -2184,10 +2200,10 @@ end = struct
           | 54 ->
               let state, action_list =
                 Greeting.fsm t.greeting_state
-                  [ Greeting.Recv_Vmajor (Bytes.sub bytes 0 1)
-                  ; Greeting.Recv_Vminor (Bytes.sub bytes 1 1)
-                  ; Greeting.Recv_Mechanism (Bytes.sub bytes 2 20)
-                  ; Greeting.Recv_as_server (Bytes.sub bytes 22 1)
+                  [ Greeting.Recv_Vmajor (Cstruct.sub bytes 0 1 |> Cstruct.to_bytes)
+                  ; Greeting.Recv_Vminor (Cstruct.sub bytes 1 1 |> Cstruct.to_bytes)
+                  ; Greeting.Recv_Mechanism (Cstruct.sub bytes 2 20 |> Cstruct.to_bytes)
+                  ; Greeting.Recv_as_server (Cstruct.sub bytes 22 1 |> Cstruct.to_bytes)
                   ; Greeting.Recv_filler ]
               in
               let connection_action = convert action_list in
@@ -2202,28 +2218,28 @@ end = struct
                 let expected_length = t.expected_bytes_length in
                 (* Handle greeting part *)
                 let* action_list_1 =
-                  fsm t (Input_data (Bytes.sub bytes 0 expected_length))
+                  fsm t (Input_data (Cstruct.sub bytes 0 expected_length))
                 in
                 (* Handle handshake part *)
                 let* action_list_2 =
                   fsm t
                     (Input_data
-                       (Bytes.sub bytes expected_length (n - expected_length)))
+                       (Cstruct.sub bytes expected_length (n - expected_length)))
                 in
                 Lwt.return (action_list_1 @ action_list_2) )
       | HANDSHAKE -> (
           if print_debug_logs then
             Logs.debug (fun f -> f "Module Connection: Handshake -> FSM") ;
-          let frames, fragment =
-            Frame.list_of_bytes (Bytes.cat t.previous_fragment bytes)
+          let frames, fragments =
+            Frame.list_of_bytes (t.previous_fragments @ [bytes])
           in
           match frames with
           | [] ->
-              t.previous_fragment <- fragment ;
+              t.previous_fragments <- fragments ;
               Lwt.return []
           | frame :: _ ->
               (* assume only one command is received at a time *)
-              t.previous_fragment <- fragment ;
+              t.previous_fragments <- fragments ;
               let command = Command.of_frame frame in
               let new_state, actions =
                 Security_mechanism.fsm t.handshake_state command
@@ -2279,10 +2295,10 @@ end = struct
       | TRAFFIC -> (
           if print_debug_logs then
             Logs.debug (fun f -> f "Module Connection: TRAFFIC -> FSM") ;
-          let frames, fragment =
-            Frame.list_of_bytes (Bytes.cat t.previous_fragment bytes)
+          let frames, fragments =
+            Frame.list_of_bytes (t.previous_fragments @ [bytes])
           in
-          t.previous_fragment <- fragment ;
+          t.previous_fragments <- fragments ;
           let manage_subscription () =
             let match_subscription_signature frame =
               if
@@ -2393,11 +2409,10 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
     | Ok (`Data b) ->
         if print_debug_logs then
           Logs.debug (fun f ->
-              f "Module Connection_tcp: Read: %d bytes:\n%s" (Cstruct.length b)
-                (Utils.buffer_to_string (Cstruct.to_bytes b)) ) ;
+              f "Module Connection_tcp: Read: %d bytes" (Cstruct.length b));
         let bytes = Cstruct.to_bytes b in
         let act () =
-          let* actions = Connection.fsm connection (Input_data bytes) in
+          let* actions = Connection.fsm connection (Input_data b) in
           let rec deal_with_action_list actions =
             match actions with
             | [] ->
@@ -2408,9 +2423,8 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
                   if print_debug_logs then
                     Logs.debug (fun f ->
                         f
-                          "Module Connection_tcp: Connection FSM Write %d bytes\n\
-                           %s"
-                          (Bytes.length b) (Utils.buffer_to_string b) ) ;
+                          "Module Connection_tcp: Connection FSM Write %d bytes"
+                          (Bytes.length b) ) ;
                   S.TCP.write flow (Cstruct.of_bytes b)
                   >>= function
                   | Error _ ->
