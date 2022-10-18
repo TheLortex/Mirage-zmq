@@ -91,6 +91,17 @@ module Utils = struct
            else string_of_int x )
          (List.rev !content))
 
+  let cstruct_to_bigstringaf (cstruct: Cstruct.t) =
+    Bigstringaf.sub cstruct.buffer ~off:cstruct.off ~len:cstruct.len
+
+  let rec consume_parser ?(res=[]) state parser =
+    match state with
+    | Angstrom.Buffered.Done ({buf; off; len}, data) ->
+      let state =  Angstrom.Buffered.(feed (parse parser) 
+                  (`Bigstring (Bigstringaf.sub buf ~off ~len))) in
+      consume_parser ~res:(data :: res) state parser
+    | _ -> List.rev res, state
+
   module Trie : sig
     type t
 
@@ -229,8 +240,10 @@ module Frame : sig
   val to_bytes : t -> Bytes.t
   (** Convert a frame to raw bytes *)
 
-  val list_of_bytes : Cstruct.t list -> t list * Cstruct.t list
+(*   val of_queue : Cstruct.t Queue.t -> t list
   (** Construct a list of frames from raw bytes and returns any remaining fragment *)
+ *)
+  val parser : t Angstrom.t
 
   val get_if_more : t -> bool
   (** Get if_more flag from a frame *)
@@ -294,9 +307,29 @@ end = struct
     
     end
 
-  let rec list_of_bytes bytes =
+  let parser =
+    let open Angstrom in
+    let (let*) a f = bind a ~f in
+    let (let+) a f = map a ~f in
+    let* flag = any_uint8 in
+    let if_long = flag land 2 = 2 in
+    let* content_length = 
+      if if_long then
+        let+ content_length = BE.any_int64 in
+        Int64.to_int content_length
+      else
+        any_uint8
+    in
+    let+ body = take content_length in 
+    {
+      flags = Char.chr flag;
+      size = content_length;
+      body = Bytes.unsafe_of_string body;
+    }
+(* 
+  let rec of_queue queue =
     let total_length = Cstruct.lenv bytes in
-    if total_length < 2 then ([], bytes)
+    if total_length < 2 then ([])
     else
       let flag_buffer, bytes' = Cstruct.splitv bytes 1 in
       let flag = Cstruct.get_byte (List.hd flag_buffer) 0 in
@@ -351,7 +384,7 @@ end = struct
           ( [ { flags= Char.chr flag
               ; size= content_length
               ; body= Cstruct.concat bytes'' |> Cstruct.to_bytes } ]
-          , [] )
+          , [] ) *)
 
   let get_if_more t = Char.code t.flags land 1 = 1
 
@@ -2018,7 +2051,8 @@ end = struct
     ; read_buffer: Frame.t buffer_stream
     ; send_buffer: Bytes.t buffer_stream
     ; mutable subscriptions: Utils.Trie.t
-    ; mutable previous_fragments: Cstruct.t list }
+    ; mutable fragments_parser : Frame.t Angstrom.Buffered.state
+    }
 
   let init socket security_mechanism tag =
 
@@ -2046,7 +2080,8 @@ end = struct
     ; read_buffer
     ; send_buffer
     ; subscriptions= Utils.Trie.create ()
-    ; previous_fragments= [] }
+    ; fragments_parser= Angstrom.Buffered.parse Frame.parser 
+    }
 
   let get_tag t = t.tag
 
@@ -2230,16 +2265,16 @@ end = struct
       | HANDSHAKE -> (
           if print_debug_logs then
             Logs.debug (fun f -> f "Module Connection: Handshake -> FSM") ;
-          let frames, fragments =
-            Frame.list_of_bytes (t.previous_fragments @ [bytes])
-          in
-          match frames with
-          | [] ->
-              t.previous_fragments <- fragments ;
-              Lwt.return []
-          | frame :: _ ->
+          t.fragments_parser <- 
+            Angstrom.Buffered.feed t.fragments_parser 
+              (`Bigstring (Utils.cstruct_to_bigstringaf bytes));
+          match Utils.consume_parser t.fragments_parser Frame.parser with
+          | [], state -> 
+            t.fragments_parser <- state;
+            Lwt.return []
+          | (frame :: _), state  ->
+              t.fragments_parser <- state;
               (* assume only one command is received at a time *)
-              t.previous_fragments <- fragments ;
               let command = Command.of_frame frame in
               let new_state, actions =
                 Security_mechanism.fsm t.handshake_state command
@@ -2295,10 +2330,13 @@ end = struct
       | TRAFFIC -> (
           if print_debug_logs then
             Logs.debug (fun f -> f "Module Connection: TRAFFIC -> FSM") ;
-          let frames, fragments =
-            Frame.list_of_bytes (t.previous_fragments @ [bytes])
+          t.fragments_parser <- 
+            Angstrom.Buffered.feed t.fragments_parser 
+              (`Bigstring (Utils.cstruct_to_bigstringaf bytes));
+          let frames, next_state = 
+            Utils.consume_parser t.fragments_parser Frame.parser 
           in
-          t.previous_fragments <- fragments ;
+          t.fragments_parser <- next_state;
           let manage_subscription () =
             let match_subscription_signature frame =
               if
@@ -2486,7 +2524,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
       (fun exn ->
         (* TODO: close *) 
         Logs.err (fun f -> f "Exception: %a" Fmt.exn exn); 
-        raise exn)
+        Lwt.fail exn)
 
   let process_output flow connection =
     Lwt.catch 
@@ -2494,7 +2532,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
       (fun exn ->
         (* TODO: close *) 
         Logs.err (fun f -> f "Exception: %a" Fmt.exn exn); 
-        raise exn)
+        Lwt.fail exn)
 
   (* End of helper functions *)
 
