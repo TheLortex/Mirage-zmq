@@ -8,6 +8,9 @@
 *.cmxs
 *.cmxa
 
+duniverse
+*.opam.locked
+
 # ocamlbuild working directory
 _build/
 

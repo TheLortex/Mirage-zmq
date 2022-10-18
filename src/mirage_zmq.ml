@@ -66,30 +66,10 @@ type connection_stage = GREETING | HANDSHAKE | TRAFFIC | CLOSED
 type connection_fsm_data = Input_data of Cstruct.t | End_of_connection
 
 module Utils = struct
-  (** Convert a series of big-endian bytes to int *)
-  let rec network_order_to_int bytes =
-    let length = Bytes.length bytes in
-    if length = 1 then Char.code (Bytes.get bytes 0)
-    else
-      Char.code (Bytes.get bytes (length - 1))
-      + (network_order_to_int (Bytes.sub bytes 0 (length - 1)) * 256)
-
   (** Convert a int to big-endian bytes of length n *)
   let int_to_network_order n length =
     Bytes.init length (fun i ->
         Char.chr ((n lsr (8 * (length - i - 1))) land 255) )
-
-  (** Converts a byte buffer to printable string *)
-  let buffer_to_string data =
-    let content = ref [] in
-    Bytes.iter (fun b -> content := Char.code b :: !content) data ;
-    String.concat " "
-      (List.map
-         (fun x ->
-           if (x >= 65 && x <= 90) || (x >= 97 && x <= 122) then
-             String.make 1 (Char.chr x)
-           else string_of_int x )
-         (List.rev !content))
 
   let cstruct_to_bigstringaf (cstruct: Cstruct.t) =
     Bigstringaf.sub cstruct.buffer ~off:cstruct.off ~len:cstruct.len
@@ -97,8 +77,8 @@ module Utils = struct
   let rec consume_parser ?(res=[]) state parser =
     match state with
     | Angstrom.Buffered.Done ({buf; off; len}, data) ->
-      let state =  Angstrom.Buffered.(feed (parse parser) 
-                  (`Bigstring (Bigstringaf.sub buf ~off ~len))) in
+      let state = Angstrom.Buffered.(feed (parse parser) 
+                (`Bigstring (Bigstringaf.copy buf ~off ~len))) in
       consume_parser ~res:(data :: res) state parser
     | _ -> List.rev res, state
 
@@ -240,9 +220,6 @@ module Frame : sig
   val to_bytes : t -> Bytes.t
   (** Convert a frame to raw bytes *)
 
-(*   val of_queue : Cstruct.t Queue.t -> t list
-  (** Construct a list of frames from raw bytes and returns any remaining fragment *)
- *)
   val parser : t Angstrom.t
 
   val get_if_more : t -> bool
@@ -290,23 +267,6 @@ end = struct
       ; size_to_bytes t.size (Char.code t.flags land 2 = 2)
       ; t.body ]
 
-  
-    module Cstruct = struct
-      include Cstruct
-
-      let rec splitv buffers n =
-        match buffers with
-        | _ when n = 0 -> [], buffers
-        | [] (* n > 0 *) -> raise (Invalid_argument "too long")
-        | buffer :: next when length buffer <= n ->
-          let before, after = splitv next (n - length buffer) in
-          buffer :: before, after
-        | buffer :: next ->
-          let before, after = split buffer n in
-          [before], after :: next
-    
-    end
-
   let parser =
     let open Angstrom in
     let (let*) a f = bind a ~f in
@@ -326,65 +286,6 @@ end = struct
       size = content_length;
       body = Bytes.unsafe_of_string body;
     }
-(* 
-  let rec of_queue queue =
-    let total_length = Cstruct.lenv bytes in
-    if total_length < 2 then ([])
-    else
-      let flag_buffer, bytes' = Cstruct.splitv bytes 1 in
-      let flag = Cstruct.get_byte (List.hd flag_buffer) 0 in
-      let if_long = flag land 2 = 2 in
-      if if_long then
-        if (* long-size *)
-           total_length < 9 then ([], bytes)
-        else
-          let content_length_buffers, bytes'' = Cstruct.splitv bytes' 8 in
-          let content_length_buffer = 
-            Cstruct.concat content_length_buffers |> Cstruct.to_bytes 
-          in
-          let content_length = Utils.network_order_to_int content_length_buffer
-          in
-          if total_length < content_length + 9 then ([], bytes)
-          else if total_length > content_length + 9 then
-            let frame, bytes =
-              Cstruct.splitv bytes'' content_length
-            in
-            let list, remain = list_of_bytes bytes
-            in
-            ( { flags= Char.chr flag
-              ; size= content_length
-              ; body= Cstruct.concat frame |> Cstruct.to_bytes }
-              :: list
-            , remain )
-          else
-            ( [ { flags= Char.chr flag
-                ; size= content_length
-                ; body= Cstruct.concat bytes'' |> Cstruct.to_bytes } ]
-            , [] )
-      else
-        (* short-size *)
-        let content_length_buffers, bytes'' = Cstruct.splitv bytes' 1 in
-        let content_length = 
-          Cstruct.get_byte (List.hd content_length_buffers) 0
-        in
-        (* check length *)
-        if total_length < content_length + 2 then ([], bytes)
-        else if total_length > content_length + 2 then
-          let frame, bytes =
-            Cstruct.splitv bytes'' content_length
-          in
-          let list, remain = list_of_bytes bytes
-          in
-          ( { flags= Char.chr flag
-            ; size= content_length
-            ; body= Cstruct.concat frame |> Cstruct.to_bytes }
-            :: list
-          , remain )
-        else
-          ( [ { flags= Char.chr flag
-              ; size= content_length
-              ; body= Cstruct.concat bytes'' |> Cstruct.to_bytes } ]
-          , [] ) *)
 
   let get_if_more t = Char.code t.flags land 1 = 1
 
@@ -776,11 +677,9 @@ end = struct
   Block if message not complete
   *)
   let get_frame_list connection =
-    Printf.printf "get_frame_list\n%!";
     let i = ref 0 in
     let rec get_reverse_frame_list_accumu list =
       let* v = Lwt_stream.get (Connection.get_read_buffer connection) in
-      Printf.printf "get_frame_list: %d\n%!" !i;
       incr i;
       match v with
       | None -> (* Stream closed *) Lwt.return_none
@@ -815,14 +714,12 @@ end = struct
         let* () = wait_for_message (connections, connections_condition) in
         loop ()
       else
-        (Printf.printf "find_connection_with_incoming_buffer\n%!";
         find_connection_with_incoming_buffer connections
         >>= function
         | None -> 
           let* () = wait_for_message (connections, connections_condition) in
           loop ()
         | Some connection -> (
-          Printf.printf "got_connection\n%!";
             (* Reconstruct message from the connection *)
             get_frame_list connection
             >>= function
@@ -832,7 +729,7 @@ end = struct
                 loop ()
             | Some frames ->
                 rotate connections false ;
-                Lwt.return (Data (Frame.splice_message_frames frames)) ))
+                Lwt.return (Data (Frame.splice_message_frames frames)))
     in
     loop ()
 
@@ -1606,7 +1503,8 @@ end = struct
       let name_length = Char.code (Bytes.get bytes 0) in
       let name = Bytes.sub_string bytes 1 name_length in
       let property_length =
-        Utils.network_order_to_int (Bytes.sub bytes (name_length + 1) 4)
+        Bytes.get_int32_be bytes (name_length + 1)
+        |> Int32.to_int
       in
       let property =
         Bytes.sub_string bytes (name_length + 1 + 4) property_length
@@ -2448,7 +2346,6 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
         if print_debug_logs then
           Logs.debug (fun f ->
               f "Module Connection_tcp: Read: %d bytes" (Cstruct.length b));
-        let bytes = Cstruct.to_bytes b in
         let act () =
           let* actions = Connection.fsm connection (Input_data b) in
           let rec deal_with_action_list actions =
