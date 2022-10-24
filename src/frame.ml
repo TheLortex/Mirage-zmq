@@ -25,6 +25,9 @@ let to_bytes t =
       t.body;
     ]
 
+let src = Logs.Src.create "zmq.frame.parser" ~doc:"ZeroMQ Frame Parser"
+module Log = (val Logs.src_log src : Logs.LOG)
+    
 let parser =
   let open Angstrom in
   let ( let* ) a f = bind a ~f in
@@ -37,6 +40,7 @@ let parser =
       Int64.to_int content_length
     else any_uint8
   in
+  Log.info (fun f -> f "Frame length: %d" content_length);
   let+ body = take content_length in
   {
     flags = Char.chr flag;

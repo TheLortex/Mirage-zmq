@@ -15,8 +15,6 @@
  *)
 open Lwt.Syntax
 
-let print_debug_logs = true
-
 exception No_Available_Peers
 exception Should_Not_Reach
 exception Socket_Name_Not_Recognised
@@ -43,6 +41,13 @@ type message_type = Data of string | Identity_and_data of string * string
 
 type connection_stage = GREETING | HANDSHAKE | TRAFFIC | CLOSED
 type connection_fsm_data = Input_data of Cstruct.t | End_of_connection
+
+module Context = Context
+
+include Security_mechanism
+
+let src = Logs.Src.create "zmq" ~doc:"ZeroMQ"
+module Log = (val Logs.src_log src : Logs.LOG)
 
 module rec Socket : sig
   type t
@@ -323,7 +328,7 @@ end = struct
   (* receive from the first available connection in the queue and rotate the queue once after receving *)
   let receive_and_rotate (connections, connections_condition) =
     let rec loop () =
-      Logs.debug (fun f -> f "receive_and_rotate");
+      Log.debug (fun f -> f "receive_and_rotate");
       if Queue.is_empty connections then
         let* () = wait_for_message (connections, connections_condition) in
         loop ()
@@ -915,8 +920,7 @@ end = struct
                         Queue.push
                           (Connection.get_tag connection)
                           request_order_queue;
-                        if print_debug_logs then
-                          Logs.debug (fun f -> f "Message sent");
+                        Log.debug (fun f -> f "Message sent");
                         rotate t.connections false;
                         Lwt.return_unit)
               | _ -> raise Should_Not_Reach)
@@ -1015,7 +1019,7 @@ end = struct
   let rec send_blocking t msg =
     try send t msg
     with No_Available_Peers ->
-      Logs.debug (fun f -> f "send_blocking: no available peers");
+      Log.debug (fun f -> f "send_blocking: no available peers");
       let* () = Lwt.pause () in
       send_blocking t msg
 
@@ -1189,8 +1193,8 @@ end = struct
   let rec fsm t data =
     match data with
     | End_of_connection ->
-        let* () = write_read_buffer t None in
-        Lwt.return []
+        let+ () = write_read_buffer t None in
+        []
     | Input_data bytes -> (
         match t.stage with
         | GREETING -> (
@@ -1204,8 +1208,7 @@ end = struct
               | PAIR -> Socket.get_pair_connected t.socket
               | _ -> false
             in
-            if print_debug_logs then
-              Logs.debug (fun f -> f "Module Connection: Greeting -> FSM");
+            Log.debug (fun f -> f "Module Connection: Greeting -> FSM");
             if if_pair then Socket.set_pair_connected t.socket true;
             let len = Cstruct.length bytes in
             let rec convert greeting_action_list =
@@ -1234,8 +1237,7 @@ end = struct
                       else convert tl
                   | Greeting.Continue -> convert tl
                   | Greeting.Ok ->
-                      if print_debug_logs then
-                        Logs.debug (fun f -> f "Module Connection: Greeting OK");
+                      Log.debug (fun f -> f "Module Connection: Greeting OK");
                       t.stage <- HANDSHAKE;
                       if
                         Security_mechanism.if_send_command_after_greeting
@@ -1358,8 +1360,7 @@ end = struct
                   in
                   Lwt.return (action_list_1 @ action_list_2))
         | HANDSHAKE -> (
-            if print_debug_logs then
-              Logs.debug (fun f -> f "Module Connection: Handshake -> FSM");
+            Log.debug (fun f -> f "Module Connection: Handshake -> FSM");
             t.fragments_parser <-
               Angstrom.Buffered.feed t.fragments_parser
                 (`Bigstring (Utils.cstruct_to_bigstringaf bytes));
@@ -1382,8 +1383,7 @@ end = struct
                       | Security_mechanism.Write b -> Write b :: convert tl
                       | Security_mechanism.Continue -> convert tl
                       | Security_mechanism.Ok ->
-                          if print_debug_logs then
-                            Logs.debug (fun f ->
+                          Log.debug (fun f ->
                                 f "Module Connection: Handshake OK");
                           t.stage <- TRAFFIC;
                           let frames =
@@ -1409,8 +1409,7 @@ end = struct
                               t.incoming_identity <- value;
                               convert tl
                           | _ ->
-                              if print_debug_logs then
-                                Logs.debug (fun f ->
+                              Log.debug (fun f ->
                                     f
                                       "Module Connection: Ignore unknown \
                                        property %s"
@@ -1421,8 +1420,7 @@ end = struct
                 t.handshake_state <- new_state;
                 Lwt.return actions)
         | TRAFFIC -> (
-            if print_debug_logs then
-              Logs.debug (fun f -> f "Module Connection: TRAFFIC -> FSM");
+            Log.debug (fun f -> f "Module Connection: TRAFFIC -> FSM");
             t.fragments_parser <-
               Angstrom.Buffered.feed t.fragments_parser
                 (`Bigstring (Utils.cstruct_to_bigstringaf bytes));
@@ -1517,15 +1515,13 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
     let* res = S.TCP.read flow in
     match res with
     | Ok `Eof ->
-        if print_debug_logs then
-          Logs.debug (fun f ->
+        Log.debug (fun f ->
               f "Module Connection_tcp: Closing connection EOF");
         ignore (Connection.fsm connection End_of_connection);
         Connection.close connection;
         Lwt.return_unit
     | Error e ->
-        if print_debug_logs then
-          Logs.warn (fun f ->
+        Log.warn (fun f ->
               f
                 "Module Connection_tcp: Error reading data from established \
                  connection: %a"
@@ -1534,8 +1530,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
         Connection.close connection;
         Lwt.return_unit
     | Ok (`Data b) ->
-        if print_debug_logs then
-          Logs.debug (fun f ->
+        Log.debug (fun f ->
               f "Module Connection_tcp: Read: %d bytes" (Cstruct.length b));
         let act () =
           let* actions = Connection.fsm connection (Input_data b) in
@@ -1545,8 +1540,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
             | hd :: tl -> (
                 match hd with
                 | Connection.Write b -> (
-                    if print_debug_logs then
-                      Logs.debug (fun f ->
+                    Log.debug (fun f ->
                           f
                             "Module Connection_tcp: Connection FSM Write %d \
                              bytes"
@@ -1554,16 +1548,14 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
                     let* write_res = S.TCP.write flow (Cstruct.of_bytes b) in
                     match write_res with
                     | Error _ ->
-                        if print_debug_logs then
-                          Logs.warn (fun f ->
+                        Log.warn (fun f ->
                               f
                                 "Module Connection_tcp: Error writing data to \
                                  established connection.");
                         Lwt.return_unit
                     | Ok () -> deal_with_action_list tl)
                 | Connection.Close s ->
-                    if print_debug_logs then
-                      Logs.debug (fun f ->
+                    Log.debug (fun f ->
                           f
                             "Module Connection_tcp: Connection FSM Close due \
                              to: %s"
@@ -1580,20 +1572,17 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
     match action with
     | None ->
         (* Stream closed *)
-        if print_debug_logs then
-          Logs.debug (fun f ->
+        Log.debug (fun f ->
               f "Module Connection_tcp: Connection was instructed to close");
         S.TCP.close flow
     | Some data -> (
-        if print_debug_logs then
-          Logs.debug (fun f ->
+        Log.debug (fun f ->
               f "Module Connection_tcp: Connection mailbox Write %d bytes"
                 (Bytes.length data));
         let* write_res = S.TCP.write flow (Cstruct.of_bytes data) in
         match write_res with
         | Error _ ->
-            if print_debug_logs then
-              Logs.warn (fun f ->
+            Log.warn (fun f ->
                   f
                     "Module Connection_tcp: Error writing data to established \
                      connection.");
@@ -1606,7 +1595,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
       (fun () -> process_input flow connection)
       (fun exn ->
         (* TODO: close *)
-        Logs.err (fun f -> f "Exception: %a" Fmt.exn exn);
+        Log.err (fun f -> f "Exception: %a" Fmt.exn exn);
         Lwt.fail exn)
 
   let process_output flow connection =
@@ -1614,7 +1603,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
       (fun () -> process_output flow connection)
       (fun exn ->
         (* TODO: close *)
-        Logs.err (fun f -> f "Exception: %a" Fmt.exn exn);
+        Log.err (fun f -> f "Exception: %a" Fmt.exn exn);
         Lwt.fail exn)
 
   (* End of helper functions *)
@@ -1626,8 +1615,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
     in
     match write_res with
     | Error _ ->
-        if print_debug_logs then
-          Logs.warn (fun f ->
+        Log.warn (fun f ->
               f
                 "Module Connection_tcp: Error writing data to established \
                  connection.");
@@ -1636,14 +1624,13 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
 
   let listen s port socket =
     S.TCP.listen (S.tcp s) ~port (fun flow ->
-        Logs.info (fun f -> f "client");
+        Log.info (fun f -> f "client");
         let dst, dst_port = S.TCP.dst flow in
-        if print_debug_logs then
-          Logs.debug (fun f ->
-              f
-                "Module Connection_tcp: New tcp connection from IP %s on port \
-                 %d"
-                (Ipaddr.to_string dst) dst_port);
+        Log.info (fun f ->
+            f
+              "Module Connection_tcp: New tcp connection from IP %s on port \
+                %d"
+              (Ipaddr.to_string dst) dst_port);
         let connection =
           Connection.init socket
             (Security_mechanism.init
@@ -1687,8 +1674,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
         in
         wait_until_traffic ()
     | Error e ->
-        if print_debug_logs then
-          Logs.warn (fun f ->
+        Log.warn (fun f ->
               f
                 "Module Connection_tcp: Error establishing connection: %a, \
                  retrying"
