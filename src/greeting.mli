@@ -26,3 +26,6 @@ val fsm : t -> event list -> t * action list
 (** FSM call for handling a list of events. *)
 
 val new_greeting : Security_mechanism.t -> Bytes.t
+(** Frame to send when greeting a peer *)
+
+val input : t -> Cstruct.t -> t * action list * Cstruct.t

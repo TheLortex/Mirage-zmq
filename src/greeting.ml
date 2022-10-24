@@ -120,3 +120,80 @@ let fsm t event_list =
             fsm_accumulator new_state tl (action :: action_list))
   in
   fsm_accumulator t event_list []
+
+let expect_greeting_length = function
+  | START -> 64
+  | VERSION_MAJOR -> 53
+  | SIGNATURE -> 54
+  | _ -> assert false
+
+let frame_to_events t frame =
+  match Cstruct.length frame, t.state with
+  (* Hard code the length here. The greeting is either complete or split into 11 + 53 or 10 + 54 *)
+  (* Full greeting *)
+  | 64, START -> 
+    [
+      Recv_sig
+        (Cstruct.sub frame 0 10 |> Cstruct.to_bytes);
+      Recv_Vmajor
+        (Cstruct.sub frame 10 1 |> Cstruct.to_bytes);
+      Recv_Vminor
+        (Cstruct.sub frame 11 1 |> Cstruct.to_bytes);
+      Recv_Mechanism
+        (Cstruct.sub frame 12 20 |> Cstruct.to_bytes);
+      Recv_as_server
+        (Cstruct.sub frame 32 1 |> Cstruct.to_bytes);
+      Recv_filler;
+    ]
+  (* Signature + version major *)
+  | 11, START ->
+    [
+      Recv_sig
+        (Cstruct.sub frame 0 10 |> Cstruct.to_bytes);
+      Recv_Vmajor
+        (Cstruct.sub frame 10 1 |> Cstruct.to_bytes);
+    ]
+  (* Signature *)
+  | 10, START ->
+    [ Recv_sig (Cstruct.to_bytes frame)]
+  (* version minor + rest *)
+  | 53, VERSION_MAJOR ->
+    [
+      Recv_Vminor
+        (Cstruct.sub frame 0 1 |> Cstruct.to_bytes);
+      Recv_Mechanism
+        (Cstruct.sub frame 1 20 |> Cstruct.to_bytes);
+      Recv_as_server
+        (Cstruct.sub frame 21 1 |> Cstruct.to_bytes);
+      Recv_filler;
+    ]
+  (* version major + rest *)
+  | 54, SIGNATURE ->
+    [
+      Recv_Vmajor
+        (Cstruct.sub frame 0 1 |> Cstruct.to_bytes);
+      Recv_Vminor
+        (Cstruct.sub frame 1 1 |> Cstruct.to_bytes);
+      Recv_Mechanism
+        (Cstruct.sub frame 2 20 |> Cstruct.to_bytes);
+      Recv_as_server
+        (Cstruct.sub frame 22 1 |> Cstruct.to_bytes);
+      Recv_filler;
+    ]
+  | _ -> assert false
+
+let split_frame_to_events t frame =
+  let size = Cstruct.length frame in
+  let expected_size = expect_greeting_length t.state in
+  if size <= expected_size then
+    frame_to_events t frame, Cstruct.empty 
+  else
+    let a, b = Cstruct.split frame expected_size in
+    frame_to_events t a, b
+
+
+
+let input t frame =
+  let events, next = split_frame_to_events t frame in
+  let t, actions = fsm t events in
+  t, actions, next
