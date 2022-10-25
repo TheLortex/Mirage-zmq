@@ -38,15 +38,14 @@ type socket_type =
 
 (* CURVE not implemented *)
 type message_type = Data of string | Identity_and_data of string * string
-
 type connection_stage = GREETING | HANDSHAKE | TRAFFIC | CLOSED
 type connection_fsm_data = Input_data of Cstruct.t | End_of_connection
 
 module Context = Context
-
 include Security_mechanism
 
 let src = Logs.Src.create "zmq" ~doc:"ZeroMQ"
+
 module Log = (val Logs.src_log src : Logs.LOG)
 
 module rec Socket : sig
@@ -82,7 +81,11 @@ module rec Socket : sig
   val get_pair_connected : t -> bool
   (** Whether a PAIR is already connected to another PAIR *)
 
-  val create_socket : Context.t -> ?mechanism:Security_mechanism.mechanism_type -> socket_type -> t
+  val create_socket :
+    Context.t ->
+    ?mechanism:Security_mechanism.mechanism_type ->
+    socket_type ->
+    t
   (** Create a socket from the given context, mechanism and type *)
 
   val set_plain_credentials : t -> string -> string -> unit
@@ -137,7 +140,6 @@ end = struct
     | Pair of { connected : bool }
 
   type t = {
-    socket_type : socket_type;
     mutable metadata : Security_mechanism.socket_metadata;
     security_mechanism : Security_mechanism.mechanism_type;
     mutable security_info : Security_mechanism.security_data;
@@ -164,6 +166,19 @@ end = struct
     | "PULL" -> PULL
     | "PAIR" -> PAIR
     | _ -> raise Socket_Name_Not_Recognised
+
+  let socket_type_of_socket_state = function
+    | Rep _ -> REP
+    | Req _ -> REQ
+    | Dealer _ -> DEALER
+    | Router -> ROUTER
+    | Pub -> PUB
+    | Sub _ -> SUB
+    | Xpub -> XPUB
+    | Xsub _ -> XSUB
+    | Push -> PUSH
+    | Pull -> PULL
+    | Pair _ -> PAIR
 
   (** Checks if the pair is valid as specified by 23/ZMTP *)
   let if_valid_socket_pair a b =
@@ -404,7 +419,7 @@ end = struct
 
   (* End of helper functions *)
 
-  let get_socket_type t = t.socket_type
+  let get_socket_type t = socket_type_of_socket_state t.socket_states
   let get_metadata t = t.metadata
 
   (*
@@ -426,7 +441,6 @@ end = struct
     match socket_type with
     | REP ->
         {
-          socket_type;
           metadata = [ ("Socket-Type", "REP") ];
           security_mechanism = mechanism;
           security_info = Null;
@@ -444,7 +458,6 @@ end = struct
         }
     | REQ ->
         {
-          socket_type;
           metadata = [ ("Socket-Type", "REQ") ];
           security_mechanism = mechanism;
           security_info = Null;
@@ -456,7 +469,6 @@ end = struct
         }
     | DEALER ->
         {
-          socket_type;
           metadata = [ ("Socket-Type", "DEALER"); ("Identity", "") ];
           security_mechanism = mechanism;
           security_info = Null;
@@ -468,7 +480,6 @@ end = struct
         }
     | ROUTER ->
         {
-          socket_type;
           metadata = [ ("Socket-Type", "ROUTER") ];
           security_mechanism = mechanism;
           security_info = Null;
@@ -480,7 +491,6 @@ end = struct
         }
     | PUB ->
         {
-          socket_type;
           metadata = [ ("Socket-Type", "PUB") ];
           security_mechanism = mechanism;
           security_info = Null;
@@ -492,7 +502,6 @@ end = struct
         }
     | XPUB ->
         {
-          socket_type;
           metadata = [ ("Socket-Type", "XPUB") ];
           security_mechanism = mechanism;
           security_info = Null;
@@ -504,7 +513,6 @@ end = struct
         }
     | SUB ->
         {
-          socket_type;
           metadata = [ ("Socket-Type", "SUB") ];
           security_mechanism = mechanism;
           security_info = Null;
@@ -518,7 +526,6 @@ end = struct
         }
     | XSUB ->
         {
-          socket_type;
           metadata = [ ("Socket-Type", "XSUB") ];
           security_mechanism = mechanism;
           security_info = Null;
@@ -530,7 +537,6 @@ end = struct
         }
     | PUSH ->
         {
-          socket_type;
           metadata = [ ("Socket-Type", "PUSH") ];
           security_mechanism = mechanism;
           security_info = Null;
@@ -542,7 +548,6 @@ end = struct
         }
     | PULL ->
         {
-          socket_type;
           metadata = [ ("Socket-Type", "PULL") ];
           security_mechanism = mechanism;
           security_info = Null;
@@ -554,7 +559,6 @@ end = struct
         }
     | PAIR ->
         {
-          socket_type;
           metadata = [ ("Socket-Type", "PAIR") ];
           security_mechanism = mechanism;
           security_info = Null;
@@ -594,42 +598,36 @@ end = struct
   let set_outgoing_queue_size t size = t.outgoing_queue_size <- Some size
 
   let set_pair_connected t status =
-    match t.socket_type with
-    | PAIR -> t.socket_states <- Pair { connected = status }
+    match t.socket_states with
+    | Pair _ -> t.socket_states <- Pair { connected = status }
     | _ ->
         raise
           (Incorrect_use_of_API "This state can only be set for PAIR socket!")
 
   let subscribe t (subscription : string) =
-    match t.socket_type with
-    | SUB | XSUB -> (
-        match t.socket_states with
-        | Sub { subscriptions } ->
-            Utils.Trie.insert subscriptions subscription;
-            send_message_to_all_active_connections t.connections
-              (subscription_frame subscription)
-        | Xsub { subscriptions } ->
-            Utils.Trie.insert subscriptions subscription;
-            send_message_to_all_active_connections t.connections
-              (subscription_frame subscription)
-        | _ -> raise Should_Not_Reach)
+    match t.socket_states with
+    | Sub { subscriptions } ->
+        Utils.Trie.insert subscriptions subscription;
+        send_message_to_all_active_connections t.connections
+          (subscription_frame subscription)
+    | Xsub { subscriptions } ->
+        Utils.Trie.insert subscriptions subscription;
+        send_message_to_all_active_connections t.connections
+          (subscription_frame subscription)
     | _ ->
         raise
           (Incorrect_use_of_API "This socket does not support subscription!")
 
   let unsubscribe t subscription =
-    match t.socket_type with
-    | SUB | XSUB -> (
-        match t.socket_states with
-        | Sub { subscriptions } ->
-            Utils.Trie.delete subscriptions subscription;
-            send_message_to_all_active_connections t.connections
-              (unsubscription_frame subscription)
-        | Xsub { subscriptions } ->
-            Utils.Trie.delete subscriptions subscription;
-            send_message_to_all_active_connections t.connections
-              (unsubscription_frame subscription)
-        | _ -> raise Should_Not_Reach)
+    match t.socket_states with
+    | Sub { subscriptions } ->
+        Utils.Trie.delete subscriptions subscription;
+        send_message_to_all_active_connections t.connections
+          (unsubscription_frame subscription)
+    | Xsub { subscriptions } ->
+        Utils.Trie.delete subscriptions subscription;
+        send_message_to_all_active_connections t.connections
+          (unsubscription_frame subscription)
     | _ ->
         raise
           (Incorrect_use_of_API "This socket does not support unsubscription!")
@@ -638,182 +636,150 @@ end = struct
      type queue_fold_type = UNINITIALISED | Result of Connection.t
   *)
   let rec recv t =
-    match t.socket_type with
-    | REP -> (
-        match t.socket_states with
-        | Rep _ -> (
-            if Queue.is_empty t.connections then
+    match t.socket_states with
+    | Rep _ -> (
+        if Queue.is_empty t.connections then
+          let* () = Lwt.pause () in
+          recv t
+        else
+          (* Go through the queue of connections and check buffer *)
+          let* conn = find_connection_with_incoming_buffer t.connections in
+          match conn with
+          | None ->
               let* () = Lwt.pause () in
               recv t
-            else
-              (* Go through the queue of connections and check buffer *)
-              let* conn = find_connection_with_incoming_buffer t.connections in
-              match conn with
+          | Some connection -> (
+              (* Reconstruct message from the connection *)
+              let* addr_envelope = get_address_envelope connection in
+              match addr_envelope with
               | None ->
-                  let* () = Lwt.pause () in
-                  recv t
-              | Some connection -> (
-                  (* Reconstruct message from the connection *)
-                  let* addr_envelope = get_address_envelope connection in
-                  match addr_envelope with
-                  | None ->
-                      Connection.close connection;
-                      rotate t.connections true;
-                      let* () = Lwt.pause () in
-                      recv t
-                  | Some address_envelope -> (
-                      let* frame_list = get_frame_list connection in
-                      match frame_list with
-                      | None ->
-                          Connection.close connection;
-                          rotate t.connections true;
-                          let* () = Lwt.pause () in
-                          recv t
-                      | Some frames ->
-                          t.socket_states <-
-                            Rep
-                              {
-                                if_received = true;
-                                last_received_connection_tag =
-                                  Connection.get_tag connection;
-                                address_envelope;
-                              };
-                          Lwt.return (Data (Frame.splice_message_frames frames))
-                      )))
-        | _ -> raise Should_Not_Reach)
-    | REQ -> (
-        match t.socket_states with
-        | Req { if_sent; last_sent_connection_tag = tag } -> (
-            if not if_sent then
-              raise
-                (Incorrect_use_of_API "Need to send a request before receiving")
-            else
-              let find_and_send connections =
-                let head = Queue.peek connections in
-                if tag = Connection.get_tag head then
-                  if Connection.get_stage head = TRAFFIC then (
-                    let* frame_list = get_frame_list head in
-                    match frame_list with
-                    | None -> Lwt.return None
-                    | Some frames ->
-                        t.socket_states <-
-                          Req { if_sent = false; last_sent_connection_tag = "" };
-                        Lwt.return (Some (Frame.splice_message_frames frames)))
-                  else (
-                    rotate t.connections true;
-                    t.socket_states <-
-                      Req { if_sent = false; last_sent_connection_tag = "" };
-                    raise Connection_closed)
-                else
-                  raise
-                    (Internal_Error "Receive target no longer at head of queue")
-              in
-              let* result = find_and_send t.connections in
-              match result with
-              | Some result ->
-                  rotate t.connections false;
-                  Lwt.return (Data result)
-              | None ->
+                  Connection.close connection;
                   rotate t.connections true;
-                  t.socket_states <-
-                    Req { if_sent = false; last_sent_connection_tag = "" };
-                  raise Connection_closed)
-        | _ -> raise Should_Not_Reach)
-    | DEALER -> (
-        match t.socket_states with
-        | Dealer { request_order_queue } -> (
-            if Queue.is_empty request_order_queue then
-              raise (Incorrect_use_of_API "You need to send requests first!")
-            else
-              let tag = Queue.peek request_order_queue in
-              find_connection t.connections (fun connection ->
-                  Connection.get_tag connection = tag)
-              |> function
-              | None ->
                   let* () = Lwt.pause () in
                   recv t
-              | Some connection -> (
-                  (* Reconstruct message from the connection *)
+              | Some address_envelope -> (
                   let* frame_list = get_frame_list connection in
                   match frame_list with
                   | None ->
                       Connection.close connection;
-                      ignore (Queue.pop request_order_queue);
-                      raise Connection_closed
-                  | Some frames ->
-                      (* Put the received connection at the end of the queue *)
-                      ignore (Queue.pop request_order_queue);
-                      Lwt.return (Data (Frame.splice_message_frames frames))))
-        | _ -> raise Should_Not_Reach)
-    | ROUTER -> (
-        match t.socket_states with
-        | Router -> (
-            if Queue.is_empty t.connections then
-              let* () = Lwt.pause () in
-              recv t
-            else
-              let* connection =
-                find_connection_with_incoming_buffer t.connections
-              in
-              match connection with
-              | None ->
-                  let* () = Lwt.pause () in
-                  recv t
-              | Some connection -> (
-                  (* Reconstruct message from the connection *)
-                  let* frames = get_frame_list connection in
-                  match frames with
-                  | None ->
-                      Connection.close connection;
                       rotate t.connections true;
                       let* () = Lwt.pause () in
                       recv t
                   | Some frames ->
-                      (* Put the received connection at the end of the queue *)
-                      rotate t.connections false;
-                      Lwt.return
-                        (Identity_and_data
-                           ( Connection.get_identity connection,
-                             Frame.splice_message_frames frames ))))
-        | _ -> raise Should_Not_Reach)
-    | PUB -> raise (Incorrect_use_of_API "Cannot receive from PUB")
-    | SUB -> (
-        match t.socket_states with
-        | Sub { subscriptions = _ } ->
-            receive_and_rotate (t.connections, t.connections_condition)
-        | _ -> raise Should_Not_Reach)
-    | XPUB -> (
-        match t.socket_states with
-        | Xpub -> receive_and_rotate (t.connections, t.connections_condition)
-        | _ -> raise Should_Not_Reach)
-    | XSUB -> (
-        match t.socket_states with
-        | Xsub { subscriptions = _ } ->
-            receive_and_rotate (t.connections, t.connections_condition)
-        | _ -> raise Should_Not_Reach)
-    | PUSH -> raise (Incorrect_use_of_API "Cannot receive from PUSH")
-    | PULL -> (
-        match t.socket_states with
-        | Pull -> receive_and_rotate (t.connections, t.connections_condition)
-        | _ -> raise Should_Not_Reach)
-    | PAIR -> (
-        match t.socket_states with
-        | Pair { connected } ->
-            if Queue.is_empty t.connections then raise No_Available_Peers
-            else
-              let connection = Queue.peek t.connections in
-              if connected && Connection.get_stage connection = TRAFFIC then
-                let* frames = get_frame_list connection in
-                match frames with
-                | None ->
-                    Connection.close connection;
-                    t.socket_states <- Pair { connected = false };
-                    rotate t.connections true;
-                    raise Connection_closed
+                      t.socket_states <-
+                        Rep
+                          {
+                            if_received = true;
+                            last_received_connection_tag =
+                              Connection.get_tag connection;
+                            address_envelope;
+                          };
+                      Lwt.return (Data (Frame.splice_message_frames frames)))))
+    | Req { if_sent; last_sent_connection_tag = tag } -> (
+        if not if_sent then
+          raise (Incorrect_use_of_API "Need to send a request before receiving")
+        else
+          let find_and_send connections =
+            let head = Queue.peek connections in
+            if tag = Connection.get_tag head then
+              if Connection.get_stage head = TRAFFIC then (
+                let* frame_list = get_frame_list head in
+                match frame_list with
+                | None -> Lwt.return None
                 | Some frames ->
-                    Lwt.return (Data (Frame.splice_message_frames frames))
-              else raise No_Available_Peers
-        | _ -> raise Should_Not_Reach)
+                    t.socket_states <-
+                      Req { if_sent = false; last_sent_connection_tag = "" };
+                    Lwt.return (Some (Frame.splice_message_frames frames)))
+              else (
+                rotate t.connections true;
+                t.socket_states <-
+                  Req { if_sent = false; last_sent_connection_tag = "" };
+                raise Connection_closed)
+            else
+              raise (Internal_Error "Receive target no longer at head of queue")
+          in
+          let* result = find_and_send t.connections in
+          match result with
+          | Some result ->
+              rotate t.connections false;
+              Lwt.return (Data result)
+          | None ->
+              rotate t.connections true;
+              t.socket_states <-
+                Req { if_sent = false; last_sent_connection_tag = "" };
+              raise Connection_closed)
+    | Dealer { request_order_queue } -> (
+        if Queue.is_empty request_order_queue then
+          raise (Incorrect_use_of_API "You need to send requests first!")
+        else
+          let tag = Queue.peek request_order_queue in
+          find_connection t.connections (fun connection ->
+              Connection.get_tag connection = tag)
+          |> function
+          | None ->
+              let* () = Lwt.pause () in
+              recv t
+          | Some connection -> (
+              (* Reconstruct message from the connection *)
+              let* frame_list = get_frame_list connection in
+              match frame_list with
+              | None ->
+                  Connection.close connection;
+                  ignore (Queue.pop request_order_queue);
+                  raise Connection_closed
+              | Some frames ->
+                  (* Put the received connection at the end of the queue *)
+                  ignore (Queue.pop request_order_queue);
+                  Lwt.return (Data (Frame.splice_message_frames frames))))
+    | Router -> (
+        if Queue.is_empty t.connections then
+          let* () = Lwt.pause () in
+          recv t
+        else
+          let* connection =
+            find_connection_with_incoming_buffer t.connections
+          in
+          match connection with
+          | None ->
+              let* () = Lwt.pause () in
+              recv t
+          | Some connection -> (
+              (* Reconstruct message from the connection *)
+              let* frames = get_frame_list connection in
+              match frames with
+              | None ->
+                  Connection.close connection;
+                  rotate t.connections true;
+                  let* () = Lwt.pause () in
+                  recv t
+              | Some frames ->
+                  (* Put the received connection at the end of the queue *)
+                  rotate t.connections false;
+                  Lwt.return
+                    (Identity_and_data
+                       ( Connection.get_identity connection,
+                         Frame.splice_message_frames frames ))))
+    | Pub -> raise (Incorrect_use_of_API "Cannot receive from PUB")
+    | Sub _ -> receive_and_rotate (t.connections, t.connections_condition)
+    | Xpub -> receive_and_rotate (t.connections, t.connections_condition)
+    | Xsub _ -> receive_and_rotate (t.connections, t.connections_condition)
+    | Push -> raise (Incorrect_use_of_API "Cannot receive from PUSH")
+    | Pull -> receive_and_rotate (t.connections, t.connections_condition)
+    | Pair { connected } ->
+        if Queue.is_empty t.connections then raise No_Available_Peers
+        else
+          let connection = Queue.peek t.connections in
+          if connected && Connection.get_stage connection = TRAFFIC then
+            let* frames = get_frame_list connection in
+            match frames with
+            | None ->
+                Connection.close connection;
+                t.socket_states <- Pair { connected = false };
+                rotate t.connections true;
+                raise Connection_closed
+            | Some frames ->
+                Lwt.return (Data (Frame.splice_message_frames frames))
+          else raise No_Available_Peers
 
   let send t msg =
     let frames =
@@ -824,194 +790,154 @@ end = struct
           List.map (fun x -> Message.to_frame x) (Message.list_of_string msg)
     in
     let try_send () =
-      match t.socket_type with
-      | REP -> (
+      match t.socket_states with
+      | Rep
+          { if_received; last_received_connection_tag = tag; address_envelope }
+        -> (
+          match msg with
+          | Data _msg ->
+              if not if_received then
+                raise
+                  (Incorrect_use_of_API
+                     "Need to receive a request before sending a message")
+              else
+                let find_and_send connections =
+                  let head = Queue.peek connections in
+                  if tag = Connection.get_tag head then
+                    if Connection.get_stage head = TRAFFIC then (
+                      let* () =
+                        Connection.send head
+                          (address_envelope @ (Frame.delimiter_frame :: frames))
+                      in
+                      t.socket_states <-
+                        Rep
+                          {
+                            if_received = false;
+                            last_received_connection_tag = "";
+                            address_envelope = [];
+                          };
+                      rotate t.connections false;
+                      Lwt.return_unit)
+                    else Lwt.return_unit
+                  else
+                    raise
+                      (Internal_Error "Send target no longer at head of queue")
+                in
+                find_and_send t.connections
+          | _ -> raise (Incorrect_use_of_API "REP sends [Data(string)]"))
+      | Req { if_sent; last_sent_connection_tag = _ } -> (
           match msg with
           | Data _msg -> (
-              let state = t.socket_states in
-              match state with
-              | Rep
-                  {
-                    if_received;
-                    last_received_connection_tag = tag;
-                    address_envelope;
-                  } ->
-                  if not if_received then
-                    raise
-                      (Incorrect_use_of_API
-                         "Need to receive a request before sending a message")
-                  else
-                    let find_and_send connections =
-                      let head = Queue.peek connections in
-                      if tag = Connection.get_tag head then
-                        if Connection.get_stage head = TRAFFIC then (
-                          let* () =
-                            Connection.send head
-                              (address_envelope
-                              @ (Frame.delimiter_frame :: frames))
-                          in
-                          t.socket_states <-
-                            Rep
-                              {
-                                if_received = false;
-                                last_received_connection_tag = "";
-                                address_envelope = [];
-                              };
-                          rotate t.connections false;
-                          Lwt.return_unit)
-                        else Lwt.return_unit
-                      else
-                        raise
-                          (Internal_Error
-                             "Send target no longer at head of queue")
+              if if_sent then
+                raise
+                  (Incorrect_use_of_API
+                     "Need to receive a reply before sending another message")
+              else
+                find_available_connection t.connections |> function
+                | None -> raise No_Available_Peers
+                | Some connection ->
+                    (* TODO check re-send is working *)
+                    Lwt_stream.get_available
+                      (Connection.get_read_buffer connection)
+                    |> ignore;
+                    let* () =
+                      Connection.send connection
+                        (Frame.delimiter_frame :: frames)
                     in
-                    find_and_send t.connections
-              | _ -> raise Should_Not_Reach)
+                    t.socket_states <-
+                      Req
+                        {
+                          if_sent = true;
+                          last_sent_connection_tag =
+                            Connection.get_tag connection;
+                        };
+                    Lwt.return_unit)
           | _ -> raise (Incorrect_use_of_API "REP sends [Data(string)]"))
-      | REQ -> (
-          match msg with
-          | Data _msg -> (
-              let state = t.socket_states in
-              match state with
-              | Req { if_sent; last_sent_connection_tag = _ } -> (
-                  if if_sent then
-                    raise
-                      (Incorrect_use_of_API
-                         "Need to receive a reply before sending another \
-                          message")
-                  else
-                    find_available_connection t.connections |> function
-                    | None -> raise No_Available_Peers
-                    | Some connection ->
-                        (* TODO check re-send is working *)
-                        Lwt_stream.get_available
-                          (Connection.get_read_buffer connection)
-                        |> ignore;
-                        let* () =
-                          Connection.send connection
-                            (Frame.delimiter_frame :: frames)
-                        in
-                        t.socket_states <-
-                          Req
-                            {
-                              if_sent = true;
-                              last_sent_connection_tag =
-                                Connection.get_tag connection;
-                            };
-                        Lwt.return_unit)
-              | _ -> raise Should_Not_Reach)
-          | _ -> raise (Incorrect_use_of_API "REP sends [Data(string)]"))
-      | DEALER -> (
+      | Dealer { request_order_queue } -> (
           (* TODO investigate DEALER dropping messages *)
           match msg with
           | Data _msg -> (
-              let state = t.socket_states in
-              match state with
-              | Dealer { request_order_queue } -> (
-                  if Queue.is_empty t.connections then raise No_Available_Peers
-                  else
-                    find_available_connection t.connections |> function
-                    | None -> raise No_Available_Peers
-                    | Some connection ->
-                        let* () =
-                          Connection.send connection ~wait_until_sent:true
-                            (Frame.delimiter_frame :: frames)
-                        in
-                        Queue.push
-                          (Connection.get_tag connection)
-                          request_order_queue;
-                        Log.debug (fun f -> f "Message sent");
-                        rotate t.connections false;
-                        Lwt.return_unit)
-              | _ -> raise Should_Not_Reach)
+              if Queue.is_empty t.connections then raise No_Available_Peers
+              else
+                find_available_connection t.connections |> function
+                | None -> raise No_Available_Peers
+                | Some connection ->
+                    let* () =
+                      Connection.send connection ~wait_until_sent:true
+                        (Frame.delimiter_frame :: frames)
+                    in
+                    Queue.push
+                      (Connection.get_tag connection)
+                      request_order_queue;
+                    Log.debug (fun f -> f "Message sent");
+                    rotate t.connections false;
+                    Lwt.return_unit)
           | _ -> raise (Incorrect_use_of_API "DEALER sends [Data(string)]"))
-      | ROUTER -> (
+      | Router -> (
           match msg with
           | Identity_and_data (id, _msg) -> (
-              match t.socket_states with
-              | Router -> (
-                  find_connection t.connections (fun connection ->
-                      Connection.get_identity connection = id)
-                  |> function
-                  | None -> Lwt.return_unit
-                  | Some connection ->
-                      let frame_list =
-                        if Connection.get_incoming_socket_type connection == REQ
-                        then Frame.delimiter_frame :: frames
-                        else frames
-                      in
-                      Connection.send connection frame_list
-                  (* TODO: Drop message when queue full *))
-              | _ -> raise Should_Not_Reach)
+              find_connection t.connections (fun connection ->
+                  Connection.get_identity connection = id)
+              |> function
+              | None -> Lwt.return_unit
+              | Some connection ->
+                  let frame_list =
+                    if Connection.get_incoming_socket_type connection == REQ
+                    then Frame.delimiter_frame :: frames
+                    else frames
+                  in
+                  Connection.send connection frame_list
+              (* TODO: Drop message when queue full *))
           | _ ->
               raise
                 (Incorrect_use_of_API
                    "Sending a message via ROUTER needs a specified receiver \
                     identity!"))
-      | PUB -> (
+      | Pub -> (
           match msg with
-          | Data msg -> (
-              match t.socket_states with
-              | Pub ->
-                  broadcast t.connections msg (fun connection ->
-                      Utils.Trie.find
-                        (Connection.get_subscriptions connection)
-                        msg);
-                  Lwt.return_unit
-              | _ -> raise Should_Not_Reach)
+          | Data msg ->
+              broadcast t.connections msg (fun connection ->
+                  Utils.Trie.find (Connection.get_subscriptions connection) msg);
+              Lwt.return_unit
           | _ -> raise (Incorrect_use_of_API "PUB accepts a message only!"))
-      | SUB -> raise (Incorrect_use_of_API "Cannot send via SUB")
-      | XPUB -> (
+      | Sub _ -> raise (Incorrect_use_of_API "Cannot send via SUB")
+      | Xpub -> (
           match msg with
-          | Data msg -> (
-              match t.socket_states with
-              | Xpub ->
-                  broadcast t.connections msg (fun connection ->
-                      Utils.Trie.find
-                        (Connection.get_subscriptions connection)
-                        msg);
-                  Lwt.return_unit
-              | _ -> raise Should_Not_Reach)
+          | Data msg ->
+              broadcast t.connections msg (fun connection ->
+                  Utils.Trie.find (Connection.get_subscriptions connection) msg);
+              Lwt.return_unit
           | _ -> raise (Incorrect_use_of_API "XPUB accepts a message only!"))
-      | XSUB -> (
+      | Xsub _ -> (
           match msg with
-          | Data msg -> (
-              match t.socket_states with
-              | Xsub { subscriptions = _ } ->
-                  broadcast t.connections msg (fun _ -> true);
-                  Lwt.return_unit
-              | _ -> raise Should_Not_Reach)
+          | Data msg ->
+              broadcast t.connections msg (fun _ -> true);
+              Lwt.return_unit
           | _ -> raise (Incorrect_use_of_API "XSUB accepts a message only!"))
-      | PUSH -> (
+      | Push -> (
           match msg with
           | Data _msg -> (
-              match t.socket_states with
-              | Push -> (
-                  if Queue.is_empty t.connections then raise No_Available_Peers
-                  else
-                    find_available_connection t.connections |> function
-                    | None -> raise No_Available_Peers
-                    | Some connection ->
-                        let+ () = Connection.send connection frames in
-                        rotate t.connections false)
-              | _ -> raise Should_Not_Reach)
+              if Queue.is_empty t.connections then raise No_Available_Peers
+              else
+                find_available_connection t.connections |> function
+                | None -> raise No_Available_Peers
+                | Some connection ->
+                    let+ () = Connection.send connection frames in
+                    rotate t.connections false)
           | _ -> raise (Incorrect_use_of_API "PUSH accepts a message only!"))
-      | PULL -> raise (Incorrect_use_of_API "Cannot send via PULL")
-      | PAIR -> (
+      | Pull -> raise (Incorrect_use_of_API "Cannot send via PULL")
+      | Pair { connected } -> (
           match msg with
-          | Data _msg -> (
-              match t.socket_states with
-              | Pair { connected } ->
-                  if Queue.is_empty t.connections then raise No_Available_Peers
-                  else
-                    let connection = Queue.peek t.connections in
-                    if
-                      connected
-                      && Connection.get_stage connection = TRAFFIC
-                      && not (Connection.if_send_queue_full connection)
-                    then Connection.send connection frames
-                    else raise No_Available_Peers
-              | _ -> raise Should_Not_Reach)
+          | Data _msg ->
+              if Queue.is_empty t.connections then raise No_Available_Peers
+              else
+                let connection = Queue.peek t.connections in
+                if
+                  connected
+                  && Connection.get_stage connection = TRAFFIC
+                  && not (Connection.if_send_queue_full connection)
+                then Connection.send connection frames
+                else raise No_Available_Peers
           | _ -> raise (Incorrect_use_of_API "PUSH accepts a message only!"))
     in
     try_send ()
@@ -1028,25 +954,19 @@ end = struct
     Lwt_condition.broadcast t.connections_condition ()
 
   let initial_traffic_messages t =
-    match t.socket_type with
-    | SUB -> (
-        match t.socket_states with
-        | Sub { subscriptions } ->
-            if not (Utils.Trie.is_empty subscriptions) then
-              List.map
-                (fun x -> subscription_frame x)
-                (Utils.Trie.to_list subscriptions)
-            else []
-        | _ -> raise Should_Not_Reach)
-    | XSUB -> (
-        match t.socket_states with
-        | Xsub { subscriptions } ->
-            if not (Utils.Trie.is_empty subscriptions) then
-              List.map
-                (fun x -> subscription_frame x)
-                (Utils.Trie.to_list subscriptions)
-            else []
-        | _ -> raise Should_Not_Reach)
+    match t.socket_states with
+    | Sub { subscriptions } ->
+        if not (Utils.Trie.is_empty subscriptions) then
+          List.map
+            (fun x -> subscription_frame x)
+            (Utils.Trie.to_list subscriptions)
+        else []
+    | Xsub { subscriptions } ->
+        if not (Utils.Trie.is_empty subscriptions) then
+          List.map
+            (fun x -> subscription_frame x)
+            (Utils.Trie.to_list subscriptions)
+        else []
     | _ -> []
 end
 
@@ -1384,7 +1304,7 @@ end = struct
                       | Security_mechanism.Continue -> convert tl
                       | Security_mechanism.Ok ->
                           Log.debug (fun f ->
-                                f "Module Connection: Handshake OK");
+                              f "Module Connection: Handshake OK");
                           t.stage <- TRAFFIC;
                           let frames =
                             Socket.initial_traffic_messages t.socket
@@ -1410,10 +1330,10 @@ end = struct
                               convert tl
                           | _ ->
                               Log.debug (fun f ->
-                                    f
-                                      "Module Connection: Ignore unknown \
-                                       property %s"
-                                      name);
+                                  f
+                                    "Module Connection: Ignore unknown \
+                                     property %s"
+                                    name);
                               convert tl))
                 in
                 let actions = convert actions in
@@ -1515,23 +1435,22 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
     let* res = S.TCP.read flow in
     match res with
     | Ok `Eof ->
-        Log.debug (fun f ->
-              f "Module Connection_tcp: Closing connection EOF");
+        Log.debug (fun f -> f "Module Connection_tcp: Closing connection EOF");
         ignore (Connection.fsm connection End_of_connection);
         Connection.close connection;
         Lwt.return_unit
     | Error e ->
         Log.warn (fun f ->
-              f
-                "Module Connection_tcp: Error reading data from established \
-                 connection: %a"
-                S.TCP.pp_error e);
+            f
+              "Module Connection_tcp: Error reading data from established \
+               connection: %a"
+              S.TCP.pp_error e);
         ignore (Connection.fsm connection End_of_connection);
         Connection.close connection;
         Lwt.return_unit
     | Ok (`Data b) ->
         Log.debug (fun f ->
-              f "Module Connection_tcp: Read: %d bytes" (Cstruct.length b));
+            f "Module Connection_tcp: Read: %d bytes" (Cstruct.length b));
         let act () =
           let* actions = Connection.fsm connection (Input_data b) in
           let rec deal_with_action_list actions =
@@ -1541,25 +1460,23 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
                 match hd with
                 | Connection.Write b -> (
                     Log.debug (fun f ->
-                          f
-                            "Module Connection_tcp: Connection FSM Write %d \
-                             bytes"
-                            (Bytes.length b));
+                        f "Module Connection_tcp: Connection FSM Write %d bytes"
+                          (Bytes.length b));
                     let* write_res = S.TCP.write flow (Cstruct.of_bytes b) in
                     match write_res with
                     | Error _ ->
                         Log.warn (fun f ->
-                              f
-                                "Module Connection_tcp: Error writing data to \
-                                 established connection.");
+                            f
+                              "Module Connection_tcp: Error writing data to \
+                               established connection.");
                         Lwt.return_unit
                     | Ok () -> deal_with_action_list tl)
                 | Connection.Close s ->
                     Log.debug (fun f ->
-                          f
-                            "Module Connection_tcp: Connection FSM Close due \
-                             to: %s"
-                            s);
+                        f
+                          "Module Connection_tcp: Connection FSM Close due to: \
+                           %s"
+                          s);
                     Lwt.return_unit)
           in
           deal_with_action_list actions
@@ -1573,19 +1490,19 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
     | None ->
         (* Stream closed *)
         Log.debug (fun f ->
-              f "Module Connection_tcp: Connection was instructed to close");
+            f "Module Connection_tcp: Connection was instructed to close");
         S.TCP.close flow
     | Some data -> (
         Log.debug (fun f ->
-              f "Module Connection_tcp: Connection mailbox Write %d bytes"
-                (Bytes.length data));
+            f "Module Connection_tcp: Connection mailbox Write %d bytes"
+              (Bytes.length data));
         let* write_res = S.TCP.write flow (Cstruct.of_bytes data) in
         match write_res with
         | Error _ ->
             Log.warn (fun f ->
-                  f
-                    "Module Connection_tcp: Error writing data to established \
-                     connection.");
+                f
+                  "Module Connection_tcp: Error writing data to established \
+                   connection.");
             let+ () = Connection.write_read_buffer connection None in
             Connection.close connection
         | Ok () -> process_output flow connection)
@@ -1616,9 +1533,9 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
     match write_res with
     | Error _ ->
         Log.warn (fun f ->
-              f
-                "Module Connection_tcp: Error writing data to established \
-                 connection.");
+            f
+              "Module Connection_tcp: Error writing data to established \
+               connection.");
         Connection.write_read_buffer connection None
     | Ok () -> process_input flow connection
 
@@ -1627,9 +1544,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
         Log.info (fun f -> f "client");
         let dst, dst_port = S.TCP.dst flow in
         Log.info (fun f ->
-            f
-              "Module Connection_tcp: New tcp connection from IP %s on port \
-                %d"
+            f "Module Connection_tcp: New tcp connection from IP %s on port %d"
               (Ipaddr.to_string dst) dst_port);
         let connection =
           Connection.init socket
@@ -1675,17 +1590,21 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
         wait_until_traffic ()
     | Error e ->
         Log.warn (fun f ->
-              f
-                "Module Connection_tcp: Error establishing connection: %a, \
-                 retrying"
-                S.TCP.pp_error e);
+            f
+              "Module Connection_tcp: Error establishing connection: %a, \
+               retrying"
+              S.TCP.pp_error e);
         connect s addr port connection
 end
 
 module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
   type t
 
-  val create_socket : Context.t -> ?mechanism:Security_mechanism.mechanism_type -> socket_type -> t
+  val create_socket :
+    Context.t ->
+    ?mechanism:Security_mechanism.mechanism_type ->
+    socket_type ->
+    t
   (** Create a socket from the given context, mechanism and type *)
 
   val set_plain_credentials : t -> string -> string -> unit
