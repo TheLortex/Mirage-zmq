@@ -50,17 +50,17 @@ module rec Socket : sig
   type pair = private Pair
 
   type ('s, 'p) typ =
-    | Rep : (rep, [< `Send | `Recv ]) typ
-    | Req : (req, [< `Send | `Recv ]) typ
-    | Dealer : (dealer, [< `Send | `Recv ]) typ
-    | Router : (router, [< `Send | `Recv ]) typ
-    | Pub : (pub, [< `Send | `Recv ]) typ
-    | Sub : (sub, [< `Recv | `Sub ]) typ
-    | Xpub : (xpub, [< `Send | `Recv ]) typ
-    | Xsub : (xsub, [< `Send | `Recv | `Sub ]) typ
-    | Push : (push, [< `Send ]) typ
-    | Pull : (pull, [< `Recv ]) typ
-    | Pair : (pair, [< `Send | `Recv ]) typ
+    | Rep : (rep, [ `Send | `Recv ]) typ
+    | Req : (req, [ `Send | `Recv ]) typ
+    | Dealer : (dealer, [ `Send | `Recv ]) typ
+    | Router : (router, [ `Send | `Recv ]) typ
+    | Pub : (pub, [ `Send ]) typ
+    | Sub : (sub, [ `Recv | `Sub ]) typ
+    | Xpub : (xpub, [ `Send | `Recv ]) typ
+    | Xsub : (xsub, [ `Send | `Recv | `Sub ]) typ
+    | Push : (push, [ `Send ]) typ
+    | Pull : (pull, [ `Recv ]) typ
+    | Pair : (pair, [ `Send | `Recv ]) typ
 
   type any_typ = U : _ typ -> any_typ
 
@@ -119,16 +119,16 @@ module rec Socket : sig
   val set_pair_connected : (pair, _) t -> bool -> unit
   (** Set PAIR's connection status *)
 
-  val subscribe : (_, [ `Sub ]) t -> string -> unit
-  val unsubscribe : (_, [ `Sub ]) t -> string -> unit
+  val subscribe : (_, [> `Sub ]) t -> string -> unit
+  val unsubscribe : (_, [> `Sub ]) t -> string -> unit
 
-  val recv : (_, [ `Recv ]) t -> message_type Lwt.t
+  val recv : (_, [> `Recv ]) t -> message_type Lwt.t
   (** Receive a msg from the underlying connections, according to the semantics of the socket type *)
 
-  val send : (_, [ `Send ]) t -> message_type -> unit Lwt.t
+  val send : (_, [> `Send ]) t -> message_type -> unit Lwt.t
   (** Send a msg to the underlying connections, according to the semantics of the socket type *)
 
-  val send_blocking : (_, [ `Send ]) t -> message_type -> unit Lwt.t
+  val send_blocking : (_, [> `Send ]) t -> message_type -> unit Lwt.t
   val add_connection : _ t -> Connection.t -> unit
 
   val initial_traffic_messages : _ t -> Frame.t list
@@ -164,7 +164,7 @@ end = struct
     | SReq : req_state -> (req, [< `Send | `Recv ]) socket_state
     | SDealer : dealer_state -> (dealer, [< `Send | `Recv ]) socket_state
     | SRouter : (router, [< `Send | `Recv ]) socket_state
-    | SPub : (pub, [< `Send | `Recv ]) socket_state
+    | SPub : (pub, [< `Send ]) socket_state
     | SSub : sub_state -> (sub, [< `Recv | `Sub ]) socket_state
     | SXpub : (xpub, [< `Send | `Recv ]) socket_state
     | SXsub : sub_state -> (xsub, [< `Send | `Recv | `Sub ]) socket_state
@@ -173,17 +173,17 @@ end = struct
     | SPair : pair_state -> (pair, [< `Send | `Recv ]) socket_state
 
   type ('s, 'p) typ =
-    | Rep : (rep, [< `Send | `Recv ]) typ
-    | Req : (req, [< `Send | `Recv ]) typ
-    | Dealer : (dealer, [< `Send | `Recv ]) typ
-    | Router : (router, [< `Send | `Recv ]) typ
-    | Pub : (pub, [< `Send | `Recv ]) typ
-    | Sub : (sub, [< `Recv | `Sub ]) typ
-    | Xpub : (xpub, [< `Send | `Recv ]) typ
-    | Xsub : (xsub, [< `Send | `Recv | `Sub ]) typ
-    | Push : (push, [< `Send ]) typ
-    | Pull : (pull, [< `Recv ]) typ
-    | Pair : (pair, [< `Send | `Recv ]) typ
+    | Rep : (rep, [ `Send | `Recv ]) typ
+    | Req : (req, [ `Send | `Recv ]) typ
+    | Dealer : (dealer, [ `Send | `Recv ]) typ
+    | Router : (router, [ `Send | `Recv ]) typ
+    | Pub : (pub, [ `Send ]) typ
+    | Sub : (sub, [ `Recv | `Sub ]) typ
+    | Xpub : (xpub, [ `Send | `Recv ]) typ
+    | Xsub : (xsub, [ `Send | `Recv | `Sub ]) typ
+    | Push : (push, [ `Send ]) typ
+    | Pull : (pull, [ `Recv ]) typ
+    | Pair : (pair, [ `Send | `Recv ]) typ
 
   type any_typ = U : _ typ -> any_typ
 
@@ -219,8 +219,7 @@ end = struct
     | _ -> raise Socket_Name_Not_Recognised
 
   (** Checks if the pair is valid as specified by 23/ZMTP *)
-  let if_valid_socket_pair (type a b c d e f g h) (a : (a, b, c, d) typ)
-      (b : (e, f, g, h) typ) =
+  let if_valid_socket_pair (type a b e f) (a : (a, b) typ) (b : (e, f) typ) =
     match (U a, U b) with
     | U Req, U Rep
     | U Req, U Router
@@ -447,13 +446,13 @@ end = struct
   let get_incoming_queue_size t = t.incoming_queue_size
   let get_outgoing_queue_size t = t.outgoing_queue_size
 
-  let get_pair_connected : (pair, _) t -> bool =
+  let get_pair_connected : type a. (pair, a) t -> bool =
    fun t ->
     match (t.socket_states : _ socket_state) with
     | SPair { connected } -> connected
 
-  let create_socket context ?(mechanism = Security_mechanism.NULL)
-      (type s r sd p) (socket_type : (s, r, sd, p) typ) =
+  let create_socket context ?(mechanism = Security_mechanism.NULL) (type s r)
+      (socket_type : (s, r) typ) =
     match socket_type with
     | Rep ->
         ({
@@ -473,7 +472,7 @@ end = struct
            incoming_queue_size = None;
            outgoing_queue_size = None;
          }
-          : (s, r, sd, p) t)
+          : (s, r) t)
     | Req ->
         {
           socket_type;
@@ -626,44 +625,101 @@ end = struct
   let set_incoming_queue_size t size = t.incoming_queue_size <- Some size
   let set_outgoing_queue_size t size = t.outgoing_queue_size <- Some size
 
-  let set_pair_connected (t : (pair, _, _, _) t) status =
-    match (t.socket_states : pair socket_state) with
+  let set_pair_connected (type a) (t : (pair, a) t) status =
+    match (t.socket_states : (pair, a) socket_state) with
     | SPair _ -> t.socket_states <- SPair { connected = status }
 
-  let subscribe : type a b c. (a, b, c, yes) t -> string -> unit =
-   fun t subscription ->
+  type ('a, 'b) can_subscribe =
+    | Yes_subscribe :
+        ('a, [ `Sub ]) socket_state
+        -> ('a, [> `Sub ]) can_subscribe
+    | No_subscribe : ('a, [< `Send | `Recv ]) can_subscribe
+
+  let can_subscribe : type a b. (a, b) t -> (a, b) can_subscribe =
+   fun t ->
     match t.socket_type with
     | Sub ->
-        let (SSub { subscriptions }) = t.socket_states in
+        let (SSub s) = t.socket_states in
+        Yes_subscribe (SSub s)
+    | Xsub ->
+        let (SXsub s) = t.socket_states in
+        Yes_subscribe (SXsub s)
+    | Req -> No_subscribe
+    | Rep -> No_subscribe
+    | Push -> No_subscribe
+    | Pull -> No_subscribe
+    | Dealer -> No_subscribe
+    | Router -> No_subscribe
+    | Pub -> No_subscribe
+    | Xpub -> No_subscribe
+    | Pair -> No_subscribe
+
+  let subscribe (type a) (t : (a, [> `Sub ]) t) subscription =
+    let (Yes_subscribe socket_state) = can_subscribe t in
+    match socket_state with
+    | SSub { subscriptions } ->
         Utils.Trie.insert subscriptions subscription;
         send_message_to_all_active_connections t.connections
           (subscription_frame subscription)
-    | Xsub ->
-        let (SXsub { subscriptions }) = t.socket_states in
+    | SXsub { subscriptions } ->
         Utils.Trie.insert subscriptions subscription;
         send_message_to_all_active_connections t.connections
           (subscription_frame subscription)
 
-  let unsubscribe (type a b c) (t : (a, b, c, yes) t) subscription =
+  let unsubscribe (type a) (t : (a, [> `Sub ]) t) subscription =
+    let (Yes_subscribe socket_state) = can_subscribe t in
+    match socket_state with
+    | SSub { subscriptions } ->
+        Utils.Trie.delete subscriptions subscription;
+        send_message_to_all_active_connections t.connections
+          (unsubscription_frame subscription)
+    | SXsub { subscriptions } ->
+        Utils.Trie.delete subscriptions subscription;
+        send_message_to_all_active_connections t.connections
+          (unsubscription_frame subscription)
+
+  type ('a, 'b) can_recv =
+    | Yes_recv :
+        ('a, [ `Recv ]) socket_state * (('a, [< `Recv ]) socket_state -> unit)
+        -> ('a, [> `Recv ]) can_recv
+    | No_recv : ('a, [< `Send | `Sub ]) can_recv
+
+  let can_recv : type a b. (a, b) t -> (a, b) can_recv =
+   fun t ->
+    let magic x = t.socket_states <- Obj.magic x in
     match t.socket_type with
     | Sub ->
-        let (SSub { subscriptions }) = t.socket_states in
-        Utils.Trie.delete subscriptions subscription;
-        send_message_to_all_active_connections t.connections
-          (unsubscription_frame subscription)
+        let (SSub s) = t.socket_states in
+        Yes_recv (SSub s, magic)
     | Xsub ->
-        let (SXsub { subscriptions }) = t.socket_states in
-        Utils.Trie.delete subscriptions subscription;
-        send_message_to_all_active_connections t.connections
-          (unsubscription_frame subscription)
+        let (SXsub s) = t.socket_states in
+        Yes_recv (SXsub s, magic)
+    | Req ->
+        let (SReq s) = t.socket_states in
+        Yes_recv (SReq s, magic)
+    | Rep ->
+        let (SRep s) = t.socket_states in
+        Yes_recv (SRep s, magic)
+    | Pull -> Yes_recv (SPull, magic)
+    | Dealer ->
+        let (SDealer s) = t.socket_states in
+        Yes_recv (SDealer s, magic)
+    | Router -> Yes_recv (SRouter, magic)
+    | Xpub -> Yes_recv (SXpub, magic)
+    | Pair ->
+        let (SPair s) = t.socket_states in
+        Yes_recv (SPair s, magic)
+    | Push -> No_recv
+    | Pub -> No_recv
 
   (*
      type queue_fold_type = UNINITIALISED | Result of Connection.t
   *)
-  let rec recv : type a b c. (a, b, yes, c) t -> message_type Lwt.t =
+  let rec recv : type a. (a, [> `Recv ]) t -> message_type Lwt.t =
    fun t ->
-    match t.socket_type with
-    | Rep -> (
+    let (Yes_recv (socket_state, socket_state_update)) = can_recv t in
+    match socket_state with
+    | SRep _ -> (
         if Queue.is_empty t.connections then
           let* () = Lwt.pause () in
           recv t
@@ -692,19 +748,16 @@ end = struct
                       let* () = Lwt.pause () in
                       recv t
                   | Some frames ->
-                      t.socket_states <-
-                        SRep
-                          {
-                            if_received = true;
-                            last_received_connection_tag =
-                              Connection.get_tag connection;
-                            address_envelope;
-                          };
+                      socket_state_update
+                        (SRep
+                           {
+                             if_received = true;
+                             last_received_connection_tag =
+                               Connection.get_tag connection;
+                             address_envelope;
+                           });
                       Lwt.return (Data (Frame.splice_message_frames frames)))))
-    | Req -> (
-        let (SReq { if_sent; last_sent_connection_tag = tag }) =
-          t.socket_states
-        in
+    | SReq { if_sent; last_sent_connection_tag = tag } -> (
         if not if_sent then
           raise (Incorrect_use_of_API "Need to send a request before receiving")
         else
@@ -716,13 +769,13 @@ end = struct
                 match frame_list with
                 | None -> Lwt.return None
                 | Some frames ->
-                    t.socket_states <-
-                      SReq { if_sent = false; last_sent_connection_tag = "" };
+                    socket_state_update
+                      (SReq { if_sent = false; last_sent_connection_tag = "" });
                     Lwt.return (Some (Frame.splice_message_frames frames)))
               else (
                 rotate t.connections true;
-                t.socket_states <-
-                  SReq { if_sent = false; last_sent_connection_tag = "" };
+                socket_state_update
+                  (SReq { if_sent = false; last_sent_connection_tag = "" });
                 raise Connection_closed)
             else
               raise (Internal_Error "Receive target no longer at head of queue")
@@ -734,11 +787,10 @@ end = struct
               Lwt.return (Data result)
           | None ->
               rotate t.connections true;
-              t.socket_states <-
-                SReq { if_sent = false; last_sent_connection_tag = "" };
+              socket_state_update
+                (SReq { if_sent = false; last_sent_connection_tag = "" });
               raise Connection_closed)
-    | Dealer -> (
-        let (SDealer { request_order_queue }) = t.socket_states in
+    | SDealer { request_order_queue } -> (
         if Queue.is_empty request_order_queue then
           raise (Incorrect_use_of_API "You need to send requests first!")
         else
@@ -761,7 +813,7 @@ end = struct
                   (* Put the received connection at the end of the queue *)
                   ignore (Queue.pop request_order_queue);
                   Lwt.return (Data (Frame.splice_message_frames frames))))
-    | Router -> (
+    | SRouter -> (
         if Queue.is_empty t.connections then
           let* () = Lwt.pause () in
           recv t
@@ -789,12 +841,11 @@ end = struct
                     (Identity_and_data
                        ( Connection.get_identity connection,
                          Frame.splice_message_frames frames ))))
-    | Sub -> receive_and_rotate (t.connections, t.connections_condition)
-    | Xpub -> receive_and_rotate (t.connections, t.connections_condition)
-    | Xsub -> receive_and_rotate (t.connections, t.connections_condition)
-    | Pull -> receive_and_rotate (t.connections, t.connections_condition)
-    | Pair ->
-        let (SPair { connected }) = t.socket_states in
+    | SSub _ -> receive_and_rotate (t.connections, t.connections_condition)
+    | SXpub -> receive_and_rotate (t.connections, t.connections_condition)
+    | SXsub _ -> receive_and_rotate (t.connections, t.connections_condition)
+    | SPull -> receive_and_rotate (t.connections, t.connections_condition)
+    | SPair { connected } ->
         if Queue.is_empty t.connections then raise No_Available_Peers
         else
           let connection = Queue.peek t.connections in
@@ -803,14 +854,46 @@ end = struct
             match frames with
             | None ->
                 Connection.close connection;
-                t.socket_states <- SPair { connected = false };
+                socket_state_update (SPair { connected = false });
                 rotate t.connections true;
                 raise Connection_closed
             | Some frames ->
                 Lwt.return (Data (Frame.splice_message_frames frames))
           else raise No_Available_Peers
 
-  let send : type a b c. (a, yes, b, c) t -> message_type -> unit Lwt.t =
+  type ('a, 'b) can_send =
+    | Yes_send :
+        (('a, [ `Send ]) socket_state * (('a, [< `Recv ]) socket_state -> unit))
+        -> ('a, [> `Send ]) can_send
+    | No_send : ('a, [< `Recv | `Sub ]) can_send
+
+  let can_send : type a b. (a, b) t -> (a, b) can_send =
+   fun t ->
+    let magic x = t.socket_states <- Obj.magic x in
+    match t.socket_type with
+    | Xsub ->
+        let (SXsub s) = t.socket_states in
+        Yes_send (SXsub s, magic)
+    | Req ->
+        let (SReq s) = t.socket_states in
+        Yes_send (SReq s, magic)
+    | Rep ->
+        let (SRep s) = t.socket_states in
+        Yes_send (SRep s, magic)
+    | Dealer ->
+        let (SDealer s) = t.socket_states in
+        Yes_send (SDealer s, magic)
+    | Router -> Yes_send (SRouter, magic)
+    | Xpub -> Yes_send (SXpub, magic)
+    | Pair ->
+        let (SPair s) = t.socket_states in
+        Yes_send (SPair s, magic)
+    | Push -> Yes_send (SPush, magic)
+    | Pub -> Yes_send (SPub, magic)
+    | Sub -> No_send
+    | Pull -> No_send
+
+  let send : type a. (a, [> `Send ]) t -> message_type -> unit Lwt.t =
    fun t msg ->
     let frames =
       match msg with
@@ -820,16 +903,11 @@ end = struct
           List.map (fun x -> Message.to_frame x) (Message.list_of_string msg)
     in
     let try_send () =
-      match t.socket_type with
-      | Rep -> (
-          let (SRep
-                {
-                  if_received;
-                  last_received_connection_tag = tag;
-                  address_envelope;
-                }) =
-            t.socket_states
-          in
+      let (Yes_send (socket_state, socket_state_update)) = can_send t in
+      match socket_state with
+      | SRep
+          { if_received; last_received_connection_tag = tag; address_envelope }
+        -> (
           match msg with
           | Data _msg ->
               if not if_received then
@@ -845,13 +923,13 @@ end = struct
                         Connection.send head
                           (address_envelope @ (Frame.delimiter_frame :: frames))
                       in
-                      t.socket_states <-
-                        SRep
-                          {
-                            if_received = false;
-                            last_received_connection_tag = "";
-                            address_envelope = [];
-                          };
+                      socket_state_update
+                        (SRep
+                           {
+                             if_received = false;
+                             last_received_connection_tag = "";
+                             address_envelope = [];
+                           });
                       rotate t.connections false;
                       Lwt.return_unit)
                     else Lwt.return_unit
@@ -861,10 +939,7 @@ end = struct
                 in
                 find_and_send t.connections
           | _ -> raise (Incorrect_use_of_API "REP sends [Data(string)]"))
-      | Req -> (
-          let (SReq { if_sent; last_sent_connection_tag = _ }) =
-            t.socket_states
-          in
+      | SReq { if_sent; last_sent_connection_tag = _ } -> (
           match msg with
           | Data _msg -> (
               if if_sent then
@@ -883,18 +958,17 @@ end = struct
                       Connection.send connection
                         (Frame.delimiter_frame :: frames)
                     in
-                    t.socket_states <-
-                      SReq
-                        {
-                          if_sent = true;
-                          last_sent_connection_tag =
-                            Connection.get_tag connection;
-                        };
+                    socket_state_update
+                      (SReq
+                         {
+                           if_sent = true;
+                           last_sent_connection_tag =
+                             Connection.get_tag connection;
+                         });
                     Lwt.return_unit)
           | _ -> raise (Incorrect_use_of_API "REP sends [Data(string)]"))
-      | Dealer -> (
+      | SDealer { request_order_queue } -> (
           (* TODO investigate DEALER dropping messages *)
-          let (SDealer { request_order_queue }) = t.socket_states in
           match msg with
           | Data _msg -> (
               if Queue.is_empty t.connections then raise No_Available_Peers
@@ -913,7 +987,7 @@ end = struct
                     rotate t.connections false;
                     Lwt.return_unit)
           | _ -> raise (Incorrect_use_of_API "DEALER sends [Data(string)]"))
-      | Router -> (
+      | SRouter -> (
           match msg with
           | Identity_and_data (id, _msg) -> (
               find_connection t.connections (fun connection ->
@@ -933,27 +1007,27 @@ end = struct
                 (Incorrect_use_of_API
                    "Sending a message via ROUTER needs a specified receiver \
                     identity!"))
-      | Pub -> (
+      | SPub -> (
           match msg with
           | Data msg ->
               broadcast t.connections msg (fun connection ->
                   Utils.Trie.find (Connection.get_subscriptions connection) msg);
               Lwt.return_unit
           | _ -> raise (Incorrect_use_of_API "PUB accepts a message only!"))
-      | Xpub -> (
+      | SXpub -> (
           match msg with
           | Data msg ->
               broadcast t.connections msg (fun connection ->
                   Utils.Trie.find (Connection.get_subscriptions connection) msg);
               Lwt.return_unit
           | _ -> raise (Incorrect_use_of_API "XPUB accepts a message only!"))
-      | Xsub -> (
+      | SXsub _ -> (
           match msg with
           | Data msg ->
               broadcast t.connections msg (fun _ -> true);
               Lwt.return_unit
           | _ -> raise (Incorrect_use_of_API "XSUB accepts a message only!"))
-      | Push -> (
+      | SPush -> (
           match msg with
           | Data _msg -> (
               if Queue.is_empty t.connections then raise No_Available_Peers
@@ -964,8 +1038,7 @@ end = struct
                     let+ () = Connection.send connection frames in
                     rotate t.connections false)
           | _ -> raise (Incorrect_use_of_API "PUSH accepts a message only!"))
-      | Pair -> (
-          let (SPair { connected }) = t.socket_states in
+      | SPair { connected } -> (
           match msg with
           | Data _msg ->
               if Queue.is_empty t.connections then raise No_Available_Peers
@@ -992,7 +1065,7 @@ end = struct
     Queue.push connection t.connections;
     Lwt_condition.broadcast t.connections_condition ()
 
-  let initial_traffic_messages (type a) (t : (a, _, _, _) t) =
+  let initial_traffic_messages (type a b) (t : (a, b) t) =
     match t.socket_states with
     | SSub { subscriptions } ->
         if not (Utils.Trie.is_empty subscriptions) then
@@ -1526,13 +1599,13 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
 end
 
 module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
-  type ('s, 'can_send, 'can_receive, 'can_subscribe) t
+  type ('s, 'p) t
 
   val create_socket :
     Context.t ->
     ?mechanism:Security_mechanism.mechanism_type ->
-    ('s, 'can_send, 'can_receive, 'can_subscribe) Socket.typ ->
-    ('s, 'can_send, 'can_receive, 'can_subscribe) t
+    ('s, 'p) Socket.typ ->
+    ('s, 'p) t
   (** Create a socket from the given context, mechanism and type *)
 
   val set_plain_credentials : _ t -> string -> string -> unit
@@ -1550,16 +1623,16 @@ module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
   val set_outgoing_queue_size : _ t -> int -> unit
   (** Set the maximum capacity of the outgoing queue *)
 
-  val subscribe : (_, _, _, Socket.yes) t -> string -> unit
-  val unsubscribe : (_, _, _, Socket.yes) t -> string -> unit
+  val subscribe : (_, [> `Sub ]) t -> string -> unit
+  val unsubscribe : (_, [> `Sub ]) t -> string -> unit
 
-  val recv : (_, _, Socket.yes, _) t -> message_type Lwt.t
+  val recv : (_, [> `Recv ]) t -> message_type Lwt.t
   (** Receive a msg from the underlying connections, according to the  semantics of the socket type *)
 
-  val send : (_, Socket.yes, _, _) t -> message_type -> unit Lwt.t
+  val send : (_, [> `Send ]) t -> message_type -> unit Lwt.t
   (** Send a msg to the underlying connections, according to the semantics of the socket type *)
 
-  val send_blocking : (_, Socket.yes, _, _) t -> message_type -> unit Lwt.t
+  val send_blocking : (_, [> `Send ]) t -> message_type -> unit Lwt.t
   (** Send a msg to the underlying connections. It blocks until a peer is available *)
 
   val bind : _ t -> int -> S.t -> unit
@@ -1570,7 +1643,7 @@ module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
 end = struct
   (* type transport_info = Tcp of string * int
  *)
-  type ('a, 'b, 'c, 'd) t = { socket : ('a, 'b, 'c, 'd) Socket.t }
+  type ('a, 'b) t = { socket : ('a, 'b) Socket.t }
 
   let create_socket context ?(mechanism = Security_mechanism.NULL) socket_type =
     { socket = Socket.create_socket context ~mechanism socket_type }

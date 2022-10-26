@@ -41,17 +41,17 @@ module rec Socket : sig
   type pair
 
   type ('s, 'p) typ =
-    | Rep : (rep, [< `Send | `Recv ]) typ
-    | Req : (req, [< `Send | `Recv ]) typ
-    | Dealer : (dealer, [< `Send | `Recv ]) typ
-    | Router : (router, [< `Send | `Recv ]) typ
-    | Pub : (pub, [< `Send | `Recv ]) typ
-    | Sub : (sub, [< `Recv | `Sub ]) typ
-    | Xpub : (xpub, [< `Send | `Recv ]) typ
-    | Xsub : (xsub, [< `Send | `Recv | `Sub ]) typ
-    | Push : (push, [< `Send ]) typ
-    | Pull : (pull, [< `Recv ]) typ
-    | Pair : (pair, [< `Send | `Recv ]) typ
+    | Rep : (rep, [ `Send | `Recv ]) typ
+    | Req : (req, [ `Send | `Recv ]) typ
+    | Dealer : (dealer, [ `Send | `Recv ]) typ
+    | Router : (router, [ `Send | `Recv ]) typ
+    | Pub : (pub, [ `Send ]) typ
+    | Sub : (sub, [ `Recv | `Sub ]) typ
+    | Xpub : (xpub, [ `Send | `Recv ]) typ
+    | Xsub : (xsub, [ `Send | `Recv | `Sub ]) typ
+    | Push : (push, [ `Send ]) typ
+    | Pull : (pull, [ `Recv ]) typ
+    | Pair : (pair, [ `Send | `Recv ]) typ
 end
 
 (** A context contains a set of default options (queue size). New sockets created in a context inherits the default options. *)
@@ -103,7 +103,7 @@ module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
   val send : (_, [> `Send ]) t -> message_type -> unit Lwt.t
   (** Send a message to the connected peer(s), according to the semantics of the socket type. The returned promise is not resolved until the message enters the outgoing queue(s). *)
 
-  val send_blocking : (_, [> `Sub ]) t -> message_type -> unit Lwt.t
+  val send_blocking : (_, [> `Send ]) t -> message_type -> unit Lwt.t
   (** Send a message to the connected peer(s). The returned promise is not resolved until the message has been sent by the TCP connection. *)
 
   val bind : _ t -> int -> S.t -> unit
