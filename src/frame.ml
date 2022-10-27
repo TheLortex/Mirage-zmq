@@ -40,7 +40,7 @@ let parser =
       Int64.to_int content_length
     else any_uint8
   in
-  Log.info (fun f -> f "Frame length: %d" content_length);
+  Log.debug (fun f -> f "Frame length: %d" content_length);
   let+ body = take content_length in
   {
     flags = Char.chr flag;
