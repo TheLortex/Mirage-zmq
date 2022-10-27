@@ -1439,7 +1439,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
     let* res = S.TCP.read flow in
     match res with
     | Ok `Eof ->
-        Log.debug (fun f -> f "Module Connection_tcp: Closing connection EOF");
+        Log.info (fun f -> f "Module Connection_tcp: Closing connection EOF");
         ignore (Connection.fsm connection End_of_connection);
         Connection.close connection;
         Lwt.return_unit
@@ -1493,7 +1493,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
     match action with
     | None ->
         (* Stream closed *)
-        Log.debug (fun f ->
+        Log.info (fun f ->
             f "Module Connection_tcp: Connection was instructed to close");
         S.TCP.close flow
     | Some data -> (
@@ -1545,7 +1545,6 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
 
   let listen s port socket =
     S.TCP.listen (S.tcp s) ~port (fun flow ->
-        Log.info (fun f -> f "client");
         let dst, dst_port = S.TCP.dst flow in
         Log.info (fun f ->
             f "Module Connection_tcp: New tcp connection from IP %s on port %d"
