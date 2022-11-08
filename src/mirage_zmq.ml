@@ -16,7 +16,6 @@
 open Lwt.Syntax
 
 exception No_Available_Peers
-exception Should_Not_Reach
 exception Socket_Name_Not_Recognised
 exception Not_Able_To_Set_Credentials
 exception Internal_Error of string
@@ -145,8 +144,6 @@ end = struct
   type push = private Push
   type pull = private Pull
   type pair = private Pair
-  type yes = private Yes
-  type no = private No
 
   type rep_state = {
     if_received : bool;
@@ -198,8 +195,6 @@ end = struct
     mutable incoming_queue_size : int option;
     mutable outgoing_queue_size : int option;
   }
-
-  type any_t = Ut : _ t -> any_t
 
   (* Start of helper functions *)
 
@@ -1308,7 +1303,7 @@ end = struct
                 let new_state, actions =
                   Security_mechanism.fsm t.handshake_state command
                 in
-                let rec convert = function
+                let convert = function
                   | Security_mechanism.Write b -> [ Write b ]
                   | Security_mechanism.Continue -> []
                   | Security_mechanism.Ok ->
