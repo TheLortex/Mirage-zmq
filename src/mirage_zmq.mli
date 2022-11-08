@@ -70,10 +70,10 @@ end
 
 (** Due to the characteristics of a unikernel, we need the network stack module to create TCP sockets *)
 module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
-  type ('a, 'b) t
+  type 'a t
 
   val create_socket :
-    Context.t -> ?mechanism:mechanism_type -> ('a, 'b) Socket.typ -> ('a, 'b) t
+    Context.t -> ?mechanism:mechanism_type -> (_, 'a) Socket.typ -> 'a t
   (** Create a socket in the given context, mechanism and type *)
 
   val set_plain_credentials : _ t -> string -> string -> unit
@@ -91,19 +91,19 @@ module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
   val set_outgoing_queue_size : _ t -> int -> unit
   (** Set the maximum capacity (size) of the outgoing queue in terms of the number of messages. *)
 
-  val subscribe : (_, [> `Sub ]) t -> string -> unit
+  val subscribe : [> `Sub ] t -> string -> unit
   (** Add a subscription topic to SUB/XSUB socket. *)
 
-  val unsubscribe : (_, [> `Sub ]) t -> string -> unit
+  val unsubscribe : [> `Sub ] t -> string -> unit
   (** Remove a subscription topic from SUB/XSUB socket *)
 
-  val recv : (_, [> `Recv ]) t -> message_type Lwt.t
+  val recv : [> `Recv ] t -> message_type Lwt.t
   (** Receive a message from the socket, according to the semantics of the socket type. The returned promise is not resolved until a message is available. *)
 
-  val send : (_, [> `Send ]) t -> message_type -> unit Lwt.t
+  val send : [> `Send ] t -> message_type -> unit Lwt.t
   (** Send a message to the connected peer(s), according to the semantics of the socket type. The returned promise is not resolved until the message enters the outgoing queue(s). *)
 
-  val send_blocking : (_, [> `Send ]) t -> message_type -> unit Lwt.t
+  val send_blocking : [> `Send ] t -> message_type -> unit Lwt.t
   (** Send a message to the connected peer(s). The returned promise is not resolved until the message has been sent by the TCP connection. *)
 
   val bind : _ t -> int -> S.t -> unit

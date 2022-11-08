@@ -1593,13 +1593,13 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
 end
 
 module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
-  type ('s, 'p) t
+  type 'p t
 
   val create_socket :
     Context.t ->
     ?mechanism:Security_mechanism.mechanism_type ->
     ('s, 'p) Socket.typ ->
-    ('s, 'p) t
+    'p t
   (** Create a socket from the given context, mechanism and type *)
 
   val set_plain_credentials : _ t -> string -> string -> unit
@@ -1617,16 +1617,16 @@ module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
   val set_outgoing_queue_size : _ t -> int -> unit
   (** Set the maximum capacity of the outgoing queue *)
 
-  val subscribe : (_, [> `Sub ]) t -> string -> unit
-  val unsubscribe : (_, [> `Sub ]) t -> string -> unit
+  val subscribe : [> `Sub ] t -> string -> unit
+  val unsubscribe : [> `Sub ] t -> string -> unit
 
-  val recv : (_, [> `Recv ]) t -> message_type Lwt.t
+  val recv : [> `Recv ] t -> message_type Lwt.t
   (** Receive a msg from the underlying connections, according to the  semantics of the socket type *)
 
-  val send : (_, [> `Send ]) t -> message_type -> unit Lwt.t
+  val send : [> `Send ] t -> message_type -> unit Lwt.t
   (** Send a msg to the underlying connections, according to the semantics of the socket type *)
 
-  val send_blocking : (_, [> `Send ]) t -> message_type -> unit Lwt.t
+  val send_blocking : [> `Send ] t -> message_type -> unit Lwt.t
   (** Send a msg to the underlying connections. It blocks until a peer is available *)
 
   val bind : _ t -> int -> S.t -> unit
@@ -1637,42 +1637,47 @@ module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
 end = struct
   (* type transport_info = Tcp of string * int
  *)
-  type ('a, 'b) t = { socket : ('a, 'b) Socket.t }
+  type 'b t = U : ('a, 'b) Socket.t -> 'b t
 
   let create_socket context ?(mechanism = Security_mechanism.NULL) socket_type =
-    { socket = Socket.create_socket context ~mechanism socket_type }
+    U (Socket.create_socket context ~mechanism socket_type)
 
-  let set_plain_credentials t username password =
-    Socket.set_plain_credentials t.socket username password
+  let set_plain_credentials (U socket) username password =
+    Socket.set_plain_credentials socket username password
 
-  let set_plain_user_list t list = Socket.set_plain_user_list t.socket list
-  let set_identity t identity = Socket.set_identity t.socket identity
+  let set_plain_user_list (U socket) list =
+    Socket.set_plain_user_list socket list
 
-  let set_incoming_queue_size t size =
-    Socket.set_incoming_queue_size t.socket size
+  let set_identity (U socket) identity = Socket.set_identity socket identity
 
-  let set_outgoing_queue_size t size =
-    Socket.set_outgoing_queue_size t.socket size
+  let set_incoming_queue_size (U socket) size =
+    Socket.set_incoming_queue_size socket size
 
-  let subscribe t subscription = Socket.subscribe t.socket subscription
-  let unsubscribe t subscription = Socket.unsubscribe t.socket subscription
-  let recv t = Socket.recv t.socket
-  let send t msg = Socket.send t.socket msg
-  let send_blocking t msg = Socket.send_blocking t.socket msg
+  let set_outgoing_queue_size (U socket) size =
+    Socket.set_outgoing_queue_size socket size
 
-  let bind t port s =
+  let subscribe (U socket) subscription = Socket.subscribe socket subscription
+
+  let unsubscribe (U socket) subscription =
+    Socket.unsubscribe socket subscription
+
+  let recv (U socket) = Socket.recv socket
+  let send (U socket) msg = Socket.send socket msg
+  let send_blocking (U socket) msg = Socket.send_blocking socket msg
+
+  let bind (U socket) port s =
     let module C_tcp = Connection_tcp (S) in
-    Lwt.async (fun () -> C_tcp.listen s port t.socket)
+    Lwt.async (fun () -> C_tcp.listen s port socket)
 
-  let connect t ipaddr port s =
+  let connect (U socket) ipaddr port s =
     let module C_tcp = Connection_tcp (S) in
     let connection =
-      Connection.init t.socket
+      Connection.init socket
         (Security_mechanism.init
-           (Socket.get_security_data t.socket)
-           (Socket.get_metadata t.socket))
+           (Socket.get_security_data socket)
+           (Socket.get_metadata socket))
         (C_tcp.tag_of_tcp_connection ipaddr port)
     in
-    Socket.add_connection t.socket connection;
+    Socket.add_connection socket connection;
     C_tcp.connect s ipaddr port connection
 end
