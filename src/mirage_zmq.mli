@@ -109,6 +109,10 @@ module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
   val bind : _ t -> int -> S.t -> unit
   (** Bind the socket to a local TCP port, so the socket will accept incoming connections. *)
 
-  val connect : _ t -> string -> int -> S.t -> unit Lwt.t
+  type flow
+
+  val connect : _ t -> string -> int -> S.t -> flow Lwt.t
   (** Connect the socket to a remote IP address and port. *)
+
+  val disconnect : flow -> unit Lwt.t
 end

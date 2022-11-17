@@ -1561,6 +1561,8 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
           start_connection flow connection));
     S.listen s
 
+  type flow = S.TCP.flow
+
   let rec connect s addr port connection =
     let ipaddr = Ipaddr.of_string_exn addr in
     let* flow = S.TCP.create_connection (S.tcp s) (ipaddr, port) in
@@ -1582,7 +1584,8 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
             wait_until_traffic ()
           else Lwt.return_unit
         in
-        wait_until_traffic ()
+        let+ () = wait_until_traffic () in
+        flow
     | Error e ->
         Log.warn (fun f ->
             f
@@ -1590,6 +1593,8 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
                retrying"
               S.TCP.pp_error e);
         connect s addr port connection
+
+  let disconnect s = S.TCP.close s
 end
 
 module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
@@ -1632,8 +1637,12 @@ module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
   val bind : _ t -> int -> S.t -> unit
   (** Bind a local TCP port to the socket so the socket will accept incoming connections *)
 
-  val connect : _ t -> string -> int -> S.t -> unit Lwt.t
+  type flow
+
+  val connect : _ t -> string -> int -> S.t -> flow Lwt.t
   (** Bind a connection to a remote TCP port to the socket *)
+
+  val disconnect : flow -> unit Lwt.t
 end = struct
   (* type transport_info = Tcp of string * int
  *)
@@ -1665,12 +1674,13 @@ end = struct
   let send (U socket) msg = Socket.send socket msg
   let send_blocking (U socket) msg = Socket.send_blocking socket msg
 
-  let bind (U socket) port s =
-    let module C_tcp = Connection_tcp (S) in
-    Lwt.async (fun () -> C_tcp.listen s port socket)
+  module C_tcp = Connection_tcp (S)
+
+  let bind (U socket) port s = Lwt.async (fun () -> C_tcp.listen s port socket)
+
+  type flow = C_tcp.flow
 
   let connect (U socket) ipaddr port s =
-    let module C_tcp = Connection_tcp (S) in
     let connection =
       Connection.init socket
         (Security_mechanism.init
@@ -1680,4 +1690,6 @@ end = struct
     in
     Socket.add_connection socket connection;
     C_tcp.connect s ipaddr port connection
+
+  let disconnect f = C_tcp.disconnect f
 end
