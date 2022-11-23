@@ -27,7 +27,7 @@ type mechanism_type = NULL | PLAIN
 (** All socket types, except ROUTER, send and receive Data. ROUTER sends and receives Identity_and_data. *)
 type message_type = Data of string | Identity_and_data of string * string
 
-module rec Socket : sig
+module Socket_type : sig
   type req
   type rep
   type dealer
@@ -40,18 +40,18 @@ module rec Socket : sig
   type pull
   type pair
 
-  type ('s, 'p) typ =
-    | Rep : (rep, [ `Send | `Recv ]) typ
-    | Req : (req, [ `Send | `Recv ]) typ
-    | Dealer : (dealer, [ `Send | `Recv ]) typ
-    | Router : (router, [ `Send | `Recv ]) typ
-    | Pub : (pub, [ `Send ]) typ
-    | Sub : (sub, [ `Recv | `Sub ]) typ
-    | Xpub : (xpub, [ `Send | `Recv ]) typ
-    | Xsub : (xsub, [ `Send | `Recv | `Sub ]) typ
-    | Push : (push, [ `Send ]) typ
-    | Pull : (pull, [ `Recv ]) typ
-    | Pair : (pair, [ `Send | `Recv ]) typ
+  type ('s, 'p) t =
+    | Rep : (rep, [ `Send | `Recv ]) t
+    | Req : (req, [ `Send | `Recv ]) t
+    | Dealer : (dealer, [ `Send | `Recv ]) t
+    | Router : (router, [ `Send | `Recv ]) t
+    | Pub : (pub, [ `Send ]) t
+    | Sub : (sub, [ `Recv | `Sub ]) t
+    | Xpub : (xpub, [ `Send | `Recv ]) t
+    | Xsub : (xsub, [ `Send | `Recv | `Sub ]) t
+    | Push : (push, [ `Send ]) t
+    | Pull : (pull, [ `Recv ]) t
+    | Pair : (pair, [ `Send | `Recv ]) t
 end
 
 (** A context contains a set of default options (queue size). New sockets created in a context inherits the default options. *)
@@ -73,7 +73,7 @@ module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
   type 'a t
 
   val create_socket :
-    Context.t -> ?mechanism:mechanism_type -> (_, 'a) Socket.typ -> 'a t
+    Context.t -> ?mechanism:mechanism_type -> (_, 'a) Socket_type.t -> 'a t
   (** Create a socket in the given context, mechanism and type *)
 
   val set_plain_credentials : _ t -> string -> string -> unit

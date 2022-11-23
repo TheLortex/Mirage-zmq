@@ -16,7 +16,6 @@
 open Lwt.Syntax
 
 exception No_Available_Peers
-exception Socket_Name_Not_Recognised
 exception Not_Able_To_Set_Credentials
 exception Internal_Error of string
 exception Incorrect_use_of_API of string
@@ -34,44 +33,17 @@ let src = Logs.Src.create "zmq" ~doc:"ZeroMQ"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
+module Socket_type = struct
+  include Socket_type
+  include Socket_type.T
+end
+
+open Socket_type.T
+
 module rec Socket : sig
   type ('s, 'capabilities) t
-  type req = private Req
-  type rep = private Rep
-  type dealer = private Dealer
-  type router = private Router
-  type pub = private Pub
-  type sub = private Sub
-  type xpub = private Xpub
-  type xsub = private Xsub
-  type push = private Push
-  type pull = private Pull
-  type pair = private Pair
 
-  type ('s, 'p) typ =
-    | Rep : (rep, [ `Send | `Recv ]) typ
-    | Req : (req, [ `Send | `Recv ]) typ
-    | Dealer : (dealer, [ `Send | `Recv ]) typ
-    | Router : (router, [ `Send | `Recv ]) typ
-    | Pub : (pub, [ `Send ]) typ
-    | Sub : (sub, [ `Recv | `Sub ]) typ
-    | Xpub : (xpub, [ `Send | `Recv ]) typ
-    | Xsub : (xsub, [ `Send | `Recv | `Sub ]) typ
-    | Push : (push, [ `Send ]) typ
-    | Pull : (pull, [ `Recv ]) typ
-    | Pair : (pair, [ `Send | `Recv ]) typ
-
-  type any_typ = U : _ typ -> any_typ
-
-  val socket_type_from_string : string -> any_typ
-  val if_valid_socket_pair : _ typ -> _ typ -> bool
-
-  (*
-     val if_has_incoming_queue : socket_type -> bool *)
-
-  val if_has_outgoing_queue : _ typ -> bool
-
-  val get_socket_type : ('s, 'a) t -> ('s, 'a) typ
+  val get_socket_type : ('s, 'a) t -> ('s, 'a) Socket_type.t
   (** Get the type of the socket *)
 
   val get_metadata : _ t -> Security_mechanism.socket_metadata
@@ -96,7 +68,7 @@ module rec Socket : sig
   val create_socket :
     Context.t ->
     ?mechanism:Security_mechanism.mechanism_type ->
-    ('a, 'b) typ ->
+    ('a, 'b) Socket_type.t ->
     ('a, 'b) t
   (** Create a socket from the given context, mechanism and type *)
 
@@ -133,18 +105,6 @@ module rec Socket : sig
   val initial_traffic_messages : _ t -> Frame.t list
   (** Get the messages to send at the beginning of a connection, e.g. subscriptions *)
 end = struct
-  type req = private Req
-  type rep = private Rep
-  type dealer = private Dealer
-  type router = private Router
-  type pub = private Pub
-  type sub = private Sub
-  type xpub = private Xpub
-  type xsub = private Xsub
-  type push = private Push
-  type pull = private Pull
-  type pair = private Pair
-
   type rep_state = {
     if_received : bool;
     last_received_connection_tag : string;
@@ -169,92 +129,19 @@ end = struct
     | SPull : (pull, [< `Recv ]) socket_state
     | SPair : pair_state -> (pair, [< `Send | `Recv ]) socket_state
 
-  type ('s, 'p) typ =
-    | Rep : (rep, [ `Send | `Recv ]) typ
-    | Req : (req, [ `Send | `Recv ]) typ
-    | Dealer : (dealer, [ `Send | `Recv ]) typ
-    | Router : (router, [ `Send | `Recv ]) typ
-    | Pub : (pub, [ `Send ]) typ
-    | Sub : (sub, [ `Recv | `Sub ]) typ
-    | Xpub : (xpub, [ `Send | `Recv ]) typ
-    | Xsub : (xsub, [ `Send | `Recv | `Sub ]) typ
-    | Push : (push, [ `Send ]) typ
-    | Pull : (pull, [ `Recv ]) typ
-    | Pair : (pair, [ `Send | `Recv ]) typ
-
-  type any_typ = U : _ typ -> any_typ
-
   type (!'s, 'a) t = {
     mutable metadata : Security_mechanism.socket_metadata;
     security_mechanism : Security_mechanism.mechanism_type;
     mutable security_info : Security_mechanism.security_data;
     connections : Connection.t Queue.t;
     connections_condition : unit Lwt_condition.t;
-    socket_type : ('s, 'a) typ;
+    socket_type : ('s, 'a) Socket_type.t;
     mutable socket_states : ('s, 'a) socket_state;
     mutable incoming_queue_size : int option;
     mutable outgoing_queue_size : int option;
   }
 
   (* Start of helper functions *)
-
-  (** Returns the socket type from string *)
-  let socket_type_from_string : string -> any_typ = function
-    | "REQ" -> U Req
-    | "REP" -> U Rep
-    | "DEALER" -> U Dealer
-    | "ROUTER" -> U Router
-    | "PUB" -> U Pub
-    | "XPUB" -> U Xpub
-    | "SUB" -> U Sub
-    | "XSUB" -> U Xsub
-    | "PUSH" -> U Push
-    | "PULL" -> U Pull
-    | "PAIR" -> U Pair
-    | _ -> raise Socket_Name_Not_Recognised
-
-  (** Checks if the pair is valid as specified by 23/ZMTP *)
-  let if_valid_socket_pair (type a b e f) (a : (a, b) typ) (b : (e, f) typ) =
-    match (U a, U b) with
-    | U Req, U Rep
-    | U Req, U Router
-    | U Rep, U Req
-    | U Rep, U Dealer
-    | U Dealer, U Rep
-    | U Dealer, U Dealer
-    | U Dealer, U Router
-    | U Router, U Req
-    | U Router, U Dealer
-    | U Router, U Router
-    | U Pub, U Sub
-    | U Pub, U Xsub
-    | U Xpub, U Sub
-    | U Xpub, U Xsub
-    | U Sub, U Pub
-    | U Sub, U Xpub
-    | U Xsub, U Pub
-    | U Xsub, U Xpub
-    | U Push, U Pull
-    | U Pull, U Push
-    | U Pair, U Pair ->
-        true
-    | _ -> false
-
-  (** Whether the socket type has an outgoing queue *)
-  let if_has_outgoing_queue socket =
-    match U socket with
-    | U Rep
-    | U Req
-    | U Dealer
-    | U Router
-    | U Pub
-    | U Sub
-    | U Xpub
-    | U Xsub
-    | U Push
-    | U Pair ->
-        true
-    | U Pull -> false
 
   (* If success, the connection at the front of the queue is available and returns it.
      Otherwise, return None *)
@@ -447,7 +334,7 @@ end = struct
     | SPair { connected } -> connected
 
   let create_socket context ?(mechanism = Security_mechanism.NULL) (type s r)
-      (socket_type : (s, r) typ) =
+      (socket_type : (s, r) Socket_type.t) =
     match socket_type with
     | Rep ->
         ({
@@ -1064,15 +951,11 @@ end = struct
     match t.socket_states with
     | SSub { subscriptions } ->
         if not (Trie.is_empty subscriptions) then
-          List.map
-            (fun x -> subscription_frame x)
-            (Trie.to_list subscriptions)
+          List.map (fun x -> subscription_frame x) (Trie.to_list subscriptions)
         else []
     | SXsub { subscriptions } ->
         if not (Trie.is_empty subscriptions) then
-          List.map
-            (fun x -> subscription_frame x)
-            (Trie.to_list subscriptions)
+          List.map (fun x -> subscription_frame x) (Trie.to_list subscriptions)
         else []
     | _ -> []
 end
@@ -1104,7 +987,7 @@ and Connection : sig
   val get_socket : t -> any_socket
   val get_identity : t -> string
   val get_subscriptions : t -> Trie.t
-  val get_incoming_socket_type : t -> Socket.any_typ
+  val get_incoming_socket_type : t -> Socket_type.any
   val greeting_message : t -> Bytes.t
 
   val fsm : t -> connection_fsm_data -> action list Lwt.t
@@ -1160,7 +1043,7 @@ end = struct
     mutable stage : connection_stage;
     mutable expected_bytes_length : int;
     mutable incoming_as_server : bool;
-    mutable incoming_socket_type : Socket.any_typ;
+    mutable incoming_socket_type : Socket_type.any;
     mutable incoming_identity : string;
     read_buffer : Frame.t buffer_stream;
     send_buffer : Bytes.t buffer_stream;
@@ -1188,7 +1071,7 @@ end = struct
       stage = GREETING;
       expected_bytes_length = 64;
       (* A value of 0 means expecting a frame of any length; starting with expectint the whole greeting *)
-      incoming_socket_type = U Socket.Rep;
+      incoming_socket_type = U Socket_type.Rep;
       incoming_as_server = false;
       incoming_identity = tag;
       read_buffer;
@@ -1317,9 +1200,9 @@ end = struct
                       match name with
                       | "Socket-Type" ->
                           let (U s) = t.socket in
-                          let (U ty) = Socket.socket_type_from_string value in
+                          let (U ty) = Socket_type.of_string value in
                           if
-                            Socket.if_valid_socket_pair
+                            Socket_type.valid_socket_pair
                               (Socket.get_socket_type s) ty
                           then (
                             t.incoming_socket_type <- U ty;
@@ -1552,7 +1435,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
             (tag_of_tcp_connection (Ipaddr.to_string dst) dst_port)
         in
         let (U socket) = Connection.get_socket connection in
-        if Socket.if_has_outgoing_queue (Socket.get_socket_type socket) then (
+        if Socket_type.has_outgoing_queue (Socket.get_socket_type socket) then (
           Socket.add_connection socket connection;
           Lwt.join
             [ start_connection flow connection; process_output flow connection ])
@@ -1570,7 +1453,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
     | Ok flow ->
         let (U socket) = Connection.get_socket connection in
         let socket_type = Socket.get_socket_type socket in
-        if Socket.if_has_outgoing_queue socket_type then
+        if Socket_type.has_outgoing_queue socket_type then
           Lwt.async (fun () ->
               Lwt.join
                 [
@@ -1603,7 +1486,7 @@ module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
   val create_socket :
     Context.t ->
     ?mechanism:Security_mechanism.mechanism_type ->
-    ('s, 'p) Socket.typ ->
+    ('s, 'p) Socket_type.t ->
     'p t
   (** Create a socket from the given context, mechanism and type *)
 
