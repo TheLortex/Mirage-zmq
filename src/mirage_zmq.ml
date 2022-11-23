@@ -153,7 +153,7 @@ end = struct
 
   type req_state = { if_sent : bool; last_sent_connection_tag : string }
   type dealer_state = { request_order_queue : string Queue.t }
-  type sub_state = { subscriptions : Utils.Trie.t }
+  type sub_state = { subscriptions : Trie.t }
   type pair_state = { connected : bool }
 
   type ('s, 'p) socket_state =
@@ -537,7 +537,7 @@ end = struct
           security_info = Null;
           connections = Queue.create ();
           connections_condition = Lwt_condition.create ();
-          socket_states = SSub { subscriptions = Utils.Trie.create () };
+          socket_states = SSub { subscriptions = Trie.create () };
           incoming_queue_size =
             Some (Context.get_default_queue_size context)
             (* Need an outgoing queue to send subscriptions *);
@@ -551,7 +551,7 @@ end = struct
           security_info = Null;
           connections = Queue.create ();
           connections_condition = Lwt_condition.create ();
-          socket_states = SXsub { subscriptions = Utils.Trie.create () };
+          socket_states = SXsub { subscriptions = Trie.create () };
           incoming_queue_size = Some (Context.get_default_queue_size context);
           outgoing_queue_size = Some (Context.get_default_queue_size context);
         }
@@ -653,11 +653,11 @@ end = struct
     let (Yes_subscribe socket_state) = can_subscribe t in
     match socket_state with
     | SSub { subscriptions } ->
-        Utils.Trie.insert subscriptions subscription;
+        Trie.insert subscriptions subscription;
         send_message_to_all_active_connections t.connections
           (subscription_frame subscription)
     | SXsub { subscriptions } ->
-        Utils.Trie.insert subscriptions subscription;
+        Trie.insert subscriptions subscription;
         send_message_to_all_active_connections t.connections
           (subscription_frame subscription)
 
@@ -665,11 +665,11 @@ end = struct
     let (Yes_subscribe socket_state) = can_subscribe t in
     match socket_state with
     | SSub { subscriptions } ->
-        Utils.Trie.delete subscriptions subscription;
+        Trie.delete subscriptions subscription;
         send_message_to_all_active_connections t.connections
           (unsubscription_frame subscription)
     | SXsub { subscriptions } ->
-        Utils.Trie.delete subscriptions subscription;
+        Trie.delete subscriptions subscription;
         send_message_to_all_active_connections t.connections
           (unsubscription_frame subscription)
 
@@ -1006,14 +1006,14 @@ end = struct
           match msg with
           | Data msg ->
               broadcast t.connections msg (fun connection ->
-                  Utils.Trie.find (Connection.get_subscriptions connection) msg);
+                  Trie.find (Connection.get_subscriptions connection) msg);
               Lwt.return_unit
           | _ -> raise (Incorrect_use_of_API "PUB accepts a message only!"))
       | SXpub -> (
           match msg with
           | Data msg ->
               broadcast t.connections msg (fun connection ->
-                  Utils.Trie.find (Connection.get_subscriptions connection) msg);
+                  Trie.find (Connection.get_subscriptions connection) msg);
               Lwt.return_unit
           | _ -> raise (Incorrect_use_of_API "XPUB accepts a message only!"))
       | SXsub _ -> (
@@ -1063,16 +1063,16 @@ end = struct
   let initial_traffic_messages (type a b) (t : (a, b) t) =
     match t.socket_states with
     | SSub { subscriptions } ->
-        if not (Utils.Trie.is_empty subscriptions) then
+        if not (Trie.is_empty subscriptions) then
           List.map
             (fun x -> subscription_frame x)
-            (Utils.Trie.to_list subscriptions)
+            (Trie.to_list subscriptions)
         else []
     | SXsub { subscriptions } ->
-        if not (Utils.Trie.is_empty subscriptions) then
+        if not (Trie.is_empty subscriptions) then
           List.map
             (fun x -> subscription_frame x)
-            (Utils.Trie.to_list subscriptions)
+            (Trie.to_list subscriptions)
         else []
     | _ -> []
 end
@@ -1103,7 +1103,7 @@ and Connection : sig
 
   val get_socket : t -> any_socket
   val get_identity : t -> string
-  val get_subscriptions : t -> Utils.Trie.t
+  val get_subscriptions : t -> Trie.t
   val get_incoming_socket_type : t -> Socket.any_typ
   val greeting_message : t -> Bytes.t
 
@@ -1164,7 +1164,7 @@ end = struct
     mutable incoming_identity : string;
     read_buffer : Frame.t buffer_stream;
     send_buffer : Bytes.t buffer_stream;
-    mutable subscriptions : Utils.Trie.t;
+    mutable subscriptions : Trie.t;
     mutable fragments_parser : Frame.t Angstrom.Buffered.state;
   }
 
@@ -1193,7 +1193,7 @@ end = struct
       incoming_identity = tag;
       read_buffer;
       send_buffer;
-      subscriptions = Utils.Trie.create ();
+      subscriptions = Trie.create ();
       fragments_parser = Angstrom.Buffered.parse Frame.parser;
     }
 
@@ -1367,11 +1367,11 @@ end = struct
                   | Unsubscribe ->
                       let body = Bytes.to_string (Frame.get_body x) in
                       let sub = String.sub body 1 (String.length body - 1) in
-                      Utils.Trie.delete t.subscriptions sub
+                      Trie.delete t.subscriptions sub
                   | Subscribe ->
                       let body = Bytes.to_string (Frame.get_body x) in
                       let sub = String.sub body 1 (String.length body - 1) in
-                      Utils.Trie.insert t.subscriptions sub
+                      Trie.insert t.subscriptions sub
                   | Ignore -> ())
                 frames
             in
