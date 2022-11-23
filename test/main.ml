@@ -43,8 +43,6 @@ let push_client port =
   let+ f = Socket.connect s "127.0.0.1" port stack in
   (s, f)
 
-let get_data = function Mirage_zmq.Data d -> d | Identity_and_data (_, d) -> d
-
 let or_timeout lwt =
   Lwt.pick
     [
@@ -62,16 +60,16 @@ let pub_sub_simple () =
   let* sub2, _f2 = sub_client 4000 in
   Logs.info (fun f -> f "SUB 2");
   let* () = Lwt_unix.sleep 0.1 in
-  let* () = Socket.send pub (Data "bonjour") in
+  let* () = Socket.send pub "bonjour" in
   Logs.info (fun f -> f "bonjour");
   let* a = Socket.recv sub1 |> or_timeout in
-  Alcotest.(check string) "1: recv bonjour" "bonjour" (get_data a);
+  Alcotest.(check string) "1: recv bonjour" "bonjour" a;
   let* b = Socket.recv sub2 |> or_timeout in
-  Alcotest.(check string) "2: recv bonjour" "bonjour" (get_data b);
+  Alcotest.(check string) "2: recv bonjour" "bonjour" b;
   let* () = Socket.disconnect f1 in
-  let* () = Socket.send pub (Data "bonjour2") in
+  let* () = Socket.send pub "bonjour2" in
   let* c = Socket.recv sub2 |> or_timeout in
-  Alcotest.(check string) "3: recv bonjour" "bonjour2" (get_data c);
+  Alcotest.(check string) "3: recv bonjour" "bonjour2" c;
   Lwt.return_unit
 
 let push_pull_simple () =
@@ -79,17 +77,17 @@ let push_pull_simple () =
   let* push1, f1 = push_client 4001 in
   Logs.info (fun f -> f "PUSH 1");
   let* () = Lwt_unix.sleep 0.1 in
-  let* () = Socket.send push1 (Data "bonjour") in
+  let* () = Socket.send push1 "bonjour" in
   let* () = Lwt_unix.sleep 0.1 in
   Logs.info (fun f -> f "bonjour");
   let* a = Socket.recv pull |> or_timeout in
-  Alcotest.(check string) "1: recv bonjour" "bonjour" (get_data a);
+  Alcotest.(check string) "1: recv bonjour" "bonjour" a;
 
   let* push2, _f2 = push_client 4001 in
   let* () = Socket.disconnect f1 in
-  let* () = Socket.send push2 (Data "bonjour2") in
+  let* () = Socket.send push2 "bonjour2" in
   let* b = Socket.recv pull |> or_timeout in
-  Alcotest.(check string) "2: recv bonjour" "bonjour2" (get_data b);
+  Alcotest.(check string) "2: recv bonjour" "bonjour2" b;
   Lwt.return_unit
 
 (* execute *)

@@ -21,11 +21,10 @@ exception Incorrect_use_of_API of string
 exception Connection_closed
 (** Raised when the connection that is the target of send/source of recv unexpectedly closes. Catch this exception to re-try the current operation on another connection if available. *)
 
+type identity_and_data = { identity : string; data : string }
+
 (** NULL and PLAIN security mechanisms are implemented in Mirage-zmq. *)
 type mechanism_type = NULL | PLAIN
-
-(** All socket types, except ROUTER, send and receive Data. ROUTER sends and receives Identity_and_data. *)
-type message_type = Data of string | Identity_and_data of string * string
 
 module Socket_type : sig
   type req
@@ -44,7 +43,7 @@ module Socket_type : sig
     | Rep : (rep, [ `Send | `Recv ]) t
     | Req : (req, [ `Send | `Recv ]) t
     | Dealer : (dealer, [ `Send | `Recv ]) t
-    | Router : (router, [ `Send | `Recv ]) t
+    | Router : (router, [ `Send_to | `Recv_from ]) t
     | Pub : (pub, [ `Send ]) t
     | Sub : (sub, [ `Recv | `Sub ]) t
     | Xpub : (xpub, [ `Send | `Recv ]) t
@@ -97,13 +96,17 @@ module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
   val unsubscribe : [> `Sub ] t -> string -> unit
   (** Remove a subscription topic from SUB/XSUB socket *)
 
-  val recv : [> `Recv ] t -> message_type Lwt.t
+  val recv : [> `Recv ] t -> string Lwt.t
   (** Receive a message from the socket, according to the semantics of the socket type. The returned promise is not resolved until a message is available. *)
 
-  val send : [> `Send ] t -> message_type -> unit Lwt.t
+  val recv_from : [> `Recv_from ] t -> identity_and_data Lwt.t
+
+  val send : [> `Send ] t -> string -> unit Lwt.t
   (** Send a message to the connected peer(s), according to the semantics of the socket type. The returned promise is not resolved until the message enters the outgoing queue(s). *)
 
-  val send_blocking : [> `Send ] t -> message_type -> unit Lwt.t
+  val send_to : [> `Send_to ] t -> identity_and_data -> unit Lwt.t
+
+  val send_blocking : [> `Send ] t -> string -> unit Lwt.t
   (** Send a message to the connected peer(s). The returned promise is not resolved until the message has been sent by the TCP connection. *)
 
   val bind : _ t -> int -> S.t -> unit

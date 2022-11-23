@@ -18,7 +18,7 @@ type ('s, 'p) t =
   | Rep : (rep, [ `Send | `Recv ]) t
   | Req : (req, [ `Send | `Recv ]) t
   | Dealer : (dealer, [ `Send | `Recv ]) t
-  | Router : (router, [ `Send | `Recv ]) t
+  | Router : (router, [ `Send_to | `Recv_from ]) t
   | Pub : (pub, [ `Send ]) t
   | Sub : (sub, [ `Recv | `Sub ]) t
   | Xpub : (xpub, [ `Send | `Recv ]) t
