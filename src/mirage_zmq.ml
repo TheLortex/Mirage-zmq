@@ -16,17 +16,15 @@
 open Lwt.Syntax
 
 exception No_Available_Peers
-exception Not_Able_To_Set_Credentials
-exception Internal_Error of string
 exception Incorrect_use_of_API of string
 exception Connection_closed
 
-type identity_and_data = { identity : string; data : string }
+include Socket
 
 (* CURVE not implemented *)
-type connection_stage = GREETING | HANDSHAKE | TRAFFIC | CLOSED
-type connection_fsm_data = Input_data of Cstruct.t | End_of_connection
-
+(* type connection_stage = GREETING | HANDSHAKE | TRAFFIC | CLOSED
+   type connection_fsm_data = Input_data of Cstruct.t | End_of_connection
+*)
 module Context = Context
 include Security_mechanism
 
@@ -39,8 +37,7 @@ module Socket_type = struct
   include Socket_type.T
 end
 
-open Socket_type.T
-
+(*
 module rec Socket : sig
   type ('s, 'capabilities) t
 
@@ -227,7 +224,7 @@ end = struct
       match v with
       | None -> (* Stream closed *) Lwt.return_none
       | Some next_frame ->
-          if Frame.get_if_more next_frame then
+          if Frame.is_more next_frame then
             get_reverse_frame_list_accumu (next_frame :: list)
           else Lwt.return (Some (next_frame :: list))
     in
@@ -282,7 +279,7 @@ end = struct
       | None -> (* Stream closed *) Lwt.return_none
       | Some next_frame ->
           if Frame.is_delimiter_frame next_frame then Lwt.return (Some list)
-          else if Frame.get_if_more next_frame then
+          else if Frame.is_more next_frame then
             get_reverse_frame_list_accumu (next_frame :: list)
           else Lwt.return (Some (next_frame :: list))
     in
@@ -810,8 +807,8 @@ end = struct
     let frames =
       List.map (fun x -> Message.to_frame x) (Message.list_of_string msg)
     in
+    let (Yes_send (socket_state, socket_state_update)) = can_send t in
     let try_send () =
-      let (Yes_send (socket_state, socket_state_update)) = can_send t in
       match socket_state with
       | SRep
           { if_received; last_received_connection_tag = tag; address_envelope }
@@ -955,8 +952,8 @@ end = struct
     | Pull -> No_send_to
     | Dealer -> No_send_to
 
-  let send_to :
-      type a. (a, [> `Send_to ]) t -> identity_and_data -> unit Lwt.t =
+  let send_to : type a. (a, [> `Send_to ]) t -> identity_and_data -> unit Lwt.t
+      =
    fun t { identity; data } ->
     let frames =
       List.map (fun x -> Message.to_frame x) (Message.list_of_string data)
@@ -1001,7 +998,8 @@ end = struct
         else []
     | _ -> []
 end
-
+ *)
+(*
 and Connection : sig
   type t
   type action = Write of bytes | Close of string
@@ -1087,8 +1085,8 @@ end = struct
     mutable incoming_as_server : bool;
     mutable incoming_socket_type : Socket_type.any;
     mutable incoming_identity : string;
-    read_buffer : Frame.t buffer_stream;
-    send_buffer : Bytes.t buffer_stream;
+    read_buffer : Frame.t Pipe.t option;
+    send_buffer : Bytes.t Pipe.t option;
     mutable subscriptions : Trie.t;
     mutable fragments_parser : Frame.t Angstrom.Buffered.state;
   }
@@ -1190,7 +1188,7 @@ end = struct
                   Log.debug (fun f -> f "Module Connection: Greeting OK");
                   t.stage <- HANDSHAKE;
                   if
-                    Security_mechanism.if_send_command_after_greeting
+                    Security_mechanism.send_command_after_greeting
                       t.handshake_state
                   then
                     Some
@@ -1274,9 +1272,9 @@ end = struct
             let manage_subscription () =
               let match_subscription_signature frame =
                 if
-                  (not (Frame.get_if_more frame))
-                  && (not (Frame.get_if_command frame))
-                  && not (Frame.get_if_long frame)
+                  (not (Frame.is_more frame))
+                  && (not (Frame.is_command frame))
+                  && not (Frame.is_long frame)
                 then
                   let first_char =
                     (Bytes.to_string (Frame.get_body frame)).[0]
@@ -1346,13 +1344,12 @@ end = struct
     | None -> false
     | Some v -> v#count >= v#size
 end
-
+ *)
 module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
   (* Start of helper functions *)
 
   (** Creates a tag for a TCP connection *)
-  let tag_of_tcp_connection ipaddr port =
-    String.concat "." [ "TCP"; ipaddr; string_of_int port ]
+  let tag_of_tcp_connection ipaddr port = Fmt.str "TCP.%s.%d" ipaddr port
 
   (** Read input from flow, send the input to FSM and execute FSM actions *)
   let rec process_input flow connection =
@@ -1360,33 +1357,31 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
     match res with
     | Ok `Eof ->
         Log.info (fun f -> f "Module Connection_tcp: Closing connection EOF");
-        ignore (Connection.fsm connection End_of_connection);
-        Connection.close connection;
-        Lwt.return_unit
+        ignore (Raw_connection.input connection (Close ""));
+        Raw_connection.close connection
     | Error e ->
         Log.warn (fun f ->
             f
-              "Module Connection_tcp: Error reading data from established \
+              "Module Raw_connection_tcp: Error reading data from established \
                connection: %a"
               S.TCP.pp_error e);
-        ignore (Connection.fsm connection End_of_connection);
-        Connection.close connection;
-        Lwt.return_unit
+        ignore (Raw_connection.input connection (Close ""));
+        Raw_connection.close connection
     | Ok (`Data b) ->
-        Log.debug (fun f ->
+        Log.info (fun f ->
             f "Module Connection_tcp: Read: %d bytes" (Cstruct.length b));
         let act () =
-          let* actions = Connection.fsm connection (Input_data b) in
+          let actions = Raw_connection.input connection (Data b) in
           let rec deal_with_action_list actions =
             match actions with
             | [] -> process_input flow connection
             | hd :: tl -> (
                 match hd with
-                | Connection.Write b -> (
+                | Raw_connection.Data b -> (
                     Log.debug (fun f ->
                         f "Module Connection_tcp: Connection FSM Write %d bytes"
-                          (Bytes.length b));
-                    let* write_res = S.TCP.write flow (Cstruct.of_bytes b) in
+                          (Cstruct.length b));
+                    let* write_res = S.TCP.write flow b in
                     match write_res with
                     | Error _ ->
                         Log.warn (fun f ->
@@ -1395,8 +1390,8 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
                                established connection.");
                         Lwt.return_unit
                     | Ok () -> deal_with_action_list tl)
-                | Connection.Close s ->
-                    Log.debug (fun f ->
+                | Close s ->
+                    Log.warn (fun f ->
                         f
                           "Module Connection_tcp: Connection FSM Close due to: \
                            %s"
@@ -1409,27 +1404,47 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
 
   (** Check the 'mailbox' and send outgoing data / close connection *)
   let rec process_output flow connection =
-    let* action = Lwt_stream.get (Connection.get_write_buffer connection) in
-    match action with
-    | None ->
-        (* Stream closed *)
-        Log.info (fun f ->
-            f "Module Connection_tcp: Connection was instructed to close");
-        S.TCP.close flow
-    | Some data -> (
-        Log.debug (fun f ->
-            f "Module Connection_tcp: Connection mailbox Write %d bytes"
-              (Bytes.length data));
-        let* write_res = S.TCP.write flow (Cstruct.of_bytes data) in
-        match write_res with
-        | Error _ ->
-            Log.warn (fun f ->
-                f
-                  "Module Connection_tcp: Error writing data to established \
-                   connection.");
-            let+ () = Connection.write_read_buffer connection None in
-            Connection.close connection
-        | Ok () -> process_output flow connection)
+    Log.debug (fun f -> f "W");
+    let* actions = Raw_connection.output connection in
+    Log.debug (fun f -> f "O");
+    let* continue =
+      actions
+      |> Lwt_list.fold_left_s
+           (fun continue action ->
+             if not continue then Lwt.return_false
+             else
+               match action with
+               | Raw_connection.Close msg ->
+                   (* Stream closed *)
+                   Log.info (fun f ->
+                       f
+                         "Module Connection_tcp: Connection was instructed to \
+                          close: %s"
+                         msg);
+                   let+ () = S.TCP.close flow in
+                   false
+               | Data data -> (
+                   Log.debug (fun f ->
+                       f
+                         "Module Connection_tcp: Connection mailbox Write %d \
+                          bytes"
+                         (Cstruct.length data));
+                   let* write_res = S.TCP.write flow data in
+                   match write_res with
+                   | Error _ ->
+                       Log.warn (fun f ->
+                           f
+                             "Module Connection_tcp: Error writing data to \
+                              established connection.");
+                       let+ () = Raw_connection.close connection in
+                       false
+                   | Ok () -> Lwt.return_true))
+           true
+    in
+    if continue then process_output flow connection
+    else (
+      Log.debug (fun f -> f "process output is done");
+      Lwt.return_unit)
 
   let process_input flow connection =
     Lwt.catch
@@ -1449,20 +1464,6 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
 
   (* End of helper functions *)
 
-  let start_connection flow connection =
-    let* write_res =
-      S.TCP.write flow
-        (Cstruct.of_bytes (Connection.greeting_message connection))
-    in
-    match write_res with
-    | Error _ ->
-        Log.warn (fun f ->
-            f
-              "Module Connection_tcp: Error writing data to established \
-               connection.");
-        Connection.write_read_buffer connection None
-    | Ok () -> process_input flow connection
-
   let listen s port socket =
     S.TCP.listen (S.tcp s) ~port (fun flow ->
         let dst, dst_port = S.TCP.dst flow in
@@ -1470,46 +1471,47 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
             f "Module Connection_tcp: New tcp connection from IP %s on port %d"
               (Ipaddr.to_string dst) dst_port);
         let connection =
-          Connection.init socket
+          Raw_connection.init (Socket.typ' socket)
             (Security_mechanism.init
-               (Socket.get_security_data socket)
-               (Socket.get_metadata socket))
+               (Socket.security_info socket)
+               (Socket.metadata socket))
             (tag_of_tcp_connection (Ipaddr.to_string dst) dst_port)
         in
-        let (U socket) = Connection.get_socket connection in
-        if Socket_type.has_outgoing_queue (Socket.get_socket_type socket) then (
-          Socket.add_connection socket connection;
-          Lwt.join
-            [ start_connection flow connection; process_output flow connection ])
-        else (
-          Socket.add_connection socket connection;
-          start_connection flow connection));
+        Lwt.join
+          [
+            Socket.add_connection socket connection;
+            process_input flow connection;
+            process_output flow connection;
+          ]);
     S.listen s
 
   type flow = S.TCP.flow
 
-  let rec connect s addr port connection =
+  let rec connect s addr port socket =
+    let connection =
+      Raw_connection.init (Socket.typ' socket)
+        (Security_mechanism.init
+           (Socket.security_info socket)
+           (Socket.metadata socket))
+        (tag_of_tcp_connection addr port)
+    in
     let ipaddr = Ipaddr.of_string_exn addr in
+    (* TODO what if connection lost after successful one: should transparently work *)
     let* flow = S.TCP.create_connection (S.tcp s) (ipaddr, port) in
     match flow with
     | Ok flow ->
-        let (U socket) = Connection.get_socket connection in
-        let socket_type = Socket.get_socket_type socket in
-        if Socket_type.has_outgoing_queue socket_type then
-          Lwt.async (fun () ->
-              Lwt.join
-                [
-                  start_connection flow connection;
-                  process_output flow connection;
-                ])
-        else Lwt.async (fun () -> start_connection flow connection);
-        let rec wait_until_traffic () =
-          if Connection.get_stage connection <> TRAFFIC then
-            let* () = Lwt.pause () in
-            wait_until_traffic ()
-          else Lwt.return_unit
-        in
-        let+ () = wait_until_traffic () in
+        Lwt.dont_wait
+          (fun () ->
+            Lwt.join
+              [
+                Socket.add_connection socket connection;
+                process_input flow connection;
+                process_output flow connection;
+              ])
+          raise;
+        Log.info (fun f -> f "Spawned threads");
+        let+ _ = Raw_connection.wait_until_ready connection in
+        Log.info (fun f -> f "Traffic");
         flow
     | Error e ->
         Log.warn (fun f ->
@@ -1517,7 +1519,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
               "Module Connection_tcp: Error establishing connection: %a, \
                retrying"
               S.TCP.pp_error e);
-        connect s addr port connection
+        connect s addr port socket
 
   let disconnect s = S.TCP.close s
 end
@@ -1611,16 +1613,6 @@ end = struct
 
   type flow = C_tcp.flow
 
-  let connect (U socket) ipaddr port s =
-    let connection =
-      Connection.init socket
-        (Security_mechanism.init
-           (Socket.get_security_data socket)
-           (Socket.get_metadata socket))
-        (C_tcp.tag_of_tcp_connection ipaddr port)
-    in
-    Socket.add_connection socket connection;
-    C_tcp.connect s ipaddr port connection
-
+  let connect (U socket) ipaddr port s = C_tcp.connect s ipaddr port socket
   let disconnect f = C_tcp.disconnect f
 end

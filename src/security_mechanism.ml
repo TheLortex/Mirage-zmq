@@ -1,7 +1,7 @@
 type state = START | START_SERVER | START_CLIENT | WELCOME | INITIATE | OK
 
 type action =
-  | Write of bytes
+  | Write of Frame.t
   | Continue
   | Close
   | Received_property of string * string
@@ -13,7 +13,6 @@ type security_data =
   | Plain_server of (string, string) Hashtbl.t
 
 type mechanism_type = NULL | PLAIN
-
 type socket_metadata = (string * string) list
 
 type t = {
@@ -29,12 +28,11 @@ type t = {
 
 (** Makes an ERROR command *)
 let error error_reason =
-  Frame.to_bytes
-    (Command.to_frame
-       (Command.make_command "ERROR"
-          (Bytes.cat
-             (Bytes.make 1 (Char.chr (String.length error_reason)))
-             (Bytes.of_string error_reason))))
+  Command.to_frame
+    (Command.make_command "ERROR"
+       (Bytes.cat
+          (Bytes.make 1 (Char.chr (String.length error_reason)))
+          (Bytes.of_string error_reason)))
 
 (** Extracts metadata from a command *)
 let rec extract_metadata bytes =
@@ -64,21 +62,19 @@ let extract_username_password bytes =
   (username, password)
 
 (** Makes a WELCOME command for a PLAIN server *)
-let welcome =
-  Frame.to_bytes (Command.to_frame (Command.make_command "WELCOME" Bytes.empty))
+let welcome = Command.to_frame (Command.make_command "WELCOME" Bytes.empty)
 
 (** Makes a HELLO command for a PLAIN client *)
 let hello username password =
-  Frame.to_bytes
-    (Command.to_frame
-       (Command.make_command "HELLO"
-          (Bytes.concat Bytes.empty
-             [
-               Bytes.make 1 (Char.chr (String.length username));
-               Bytes.of_string username;
-               Bytes.make 1 (Char.chr (String.length password));
-               Bytes.of_string password;
-             ])))
+  Command.to_frame
+    (Command.make_command "HELLO"
+       (Bytes.concat Bytes.empty
+          [
+            Bytes.make 1 (Char.chr (String.length username));
+            Bytes.of_string username;
+            Bytes.make 1 (Char.chr (String.length password));
+            Bytes.of_string password;
+          ]))
 
 (** Makes a new handshake for NULL mechanism *)
 let new_handshake_null metadata =
@@ -95,9 +91,7 @@ let new_handshake_null metadata =
     | [] -> Bytes.empty
     | hd :: tl -> Bytes.cat (bytes_of_metadata hd) (convert_metadata tl)
   in
-  Frame.to_bytes
-    (Command.to_frame
-       (Command.make_command "READY" (convert_metadata metadata)))
+  Command.to_frame (Command.make_command "READY" (convert_metadata metadata))
 
 (** Makes a metadata command (command = "INITIATE"/"READY") for PLAIN mechanism *)
 let metadata_command command metadata =
@@ -114,9 +108,7 @@ let metadata_command command metadata =
     | [] -> Bytes.empty
     | hd :: tl -> Bytes.cat (bytes_of_metadata hd) (convert_metadata tl)
   in
-  Frame.to_bytes
-    (Command.to_frame
-       (Command.make_command command (convert_metadata metadata)))
+  Command.to_frame (Command.make_command command (convert_metadata metadata))
 
 (* End of helper functions *)
 
@@ -155,13 +147,13 @@ let init security_data socket_metadata =
 
 let client_first_message t =
   match t.mechanism_type with
-  | NULL -> Bytes.empty
+  | NULL -> invalid_arg "client_first_message NULL"
   | PLAIN ->
       if t.as_client then
         match t.data with
         | Plain_client (u, p) -> hello u p
         | _ -> invalid_arg "Security mechanism mismatch"
-      else Bytes.empty
+      else invalid_arg "client_first_message PLAIN"
 
 let fsm t command =
   let name = Command.get_name command in
@@ -232,7 +224,7 @@ let fsm t command =
 
 let get_as_server t = t.as_server
 let get_as_client t = t.as_client
-let if_send_command_after_greeting t = t.as_client || t.mechanism_type = NULL
+let send_command_after_greeting t = t.as_client || t.mechanism_type = NULL
 
 let first_command t =
   if t.mechanism_type = NULL then new_handshake_null t.socket_metadata

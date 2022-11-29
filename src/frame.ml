@@ -25,9 +25,12 @@ let to_bytes t =
       t.body;
     ]
 
+(* TODO serializer*)
+let to_cstruct t = Cstruct.of_bytes (to_bytes t)
 let src = Logs.Src.create "zmq.frame.parser" ~doc:"ZeroMQ Frame Parser"
+
 module Log = (val Logs.src_log src : Logs.LOG)
-    
+
 let parser =
   let open Angstrom in
   let ( let* ) a f = bind a ~f in
@@ -48,11 +51,11 @@ let parser =
     body = Bytes.unsafe_of_string body;
   }
 
-let get_if_more t = Char.code t.flags land 1 = 1
-let get_if_long t = Char.code t.flags land 2 = 2
-let get_if_command t = Char.code t.flags land 4 = 4
+let is_more t = Char.code t.flags land 1 = 1
+let is_long t = Char.code t.flags land 2 = 2
+let is_command t = Char.code t.flags land 4 = 4
 let get_body t = t.body
-let is_delimiter_frame t = get_if_more t && t.size = 0
+let is_delimiter_frame t = is_more t && t.size = 0
 let delimiter_frame = { flags = Char.chr 1; size = 0; body = Bytes.empty }
 
 let splice_message_frames list =
