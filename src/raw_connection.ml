@@ -168,8 +168,9 @@ let handle_handshake_actions (St t) action =
           f "Module Connection: Ignore unknown property %s" name);
       None
   | Handshake _, Ok ->
-      Log.debug (fun f -> f "Module Connection: Got OK but not ready");
-      None
+      Log.err (fun f ->
+          f "Module Connection: Got OK but not ready (missing socket type)");
+      assert false
   | _ -> assert false
 
 let rec input_bytes (St t) bytes =

@@ -1,6 +1,10 @@
 open Socket_type.T
 open Lwt.Syntax
 
+let src = Logs.Src.create "zmq.socket" ~doc:"ZeroMQ"
+
+module Log = (val Logs.src_log src : Logs.LOG)
+
 type identity_and_data = { identity : string; data : string }
 
 module Sub_management = struct
@@ -39,16 +43,26 @@ type ('s, 'p) socket_state =
   | SPull : (pull, [< `Recv ]) socket_state
   | SPair : pair_state -> (pair, [< `Send | `Recv ]) socket_state
 
+type conn_rep_state = Building of Frame.t list | Ready of Frame.t list
+
 type 's connection_state =
   | CSXpub : sub_state -> xpub connection_state
   | CSPub : sub_state -> pub connection_state
-  | None : 'a connection_state
+  | CSRep : conn_rep_state -> rep connection_state
+  | CSReq : req connection_state
+  | CSDealer : dealer connection_state
+  | CSRouter : router connection_state
+  | CSSub : sub connection_state
+  | CSXsub : xsub connection_state
+  | CSPush : push connection_state
+  | CSPull : pull connection_state
+  | CSPair : pair connection_state
 
 type frame_state = Nothing | Frames of Frame.t list | Message of string
 
 type 's connection = {
   conn : 's Raw_connection.t;
-  conn_state : 's connection_state;
+  mutable conn_state : 's connection_state;
   mutable frame_state : frame_state;
   cond : unit Lwt_condition.t;
 }
@@ -286,14 +300,51 @@ let manage_subscription (type a) (t : a connection) frame =
           let sub = String.sub body 1 (String.length body - 1) in
           Trie.insert s.subscriptions sub
       | Ignore -> ())
-  | None -> ()
+  | _ -> ()
+
+let manage_frame_message v frame =
+  let all_frames =
+    match v.frame_state with
+    | Message _ -> assert false
+    | Nothing -> [ frame ]
+    | Frames frames -> frame :: frames
+  in
+  if Frame.is_more frame then v.frame_state <- Frames all_frames
+  else (
+    Log.info (fun f -> f "Message ready");
+    v.frame_state <- Message (List.rev all_frames |> Frame.splice_message_frames);
+    Lwt_condition.broadcast v.cond ())
+
+let manage_rep lst v frame =
+  if Frame.is_delimiter_frame frame then
+    v.conn_state <- CSRep (Ready (List.rev lst))
+  else v.conn_state <- CSRep (Building (frame :: lst))
 
 let default_conn_state : type a s. (a, s) t -> a connection_state =
  fun t ->
   match t.socket_type with
   | Pub -> CSPub { subscriptions = Trie.create () }
   | Xpub -> CSXpub { subscriptions = Trie.create () }
-  | _ -> None
+  | Rep -> CSRep (Building [])
+  | Req -> CSReq
+  | Dealer -> CSDealer
+  | Router -> CSRouter
+  | Sub -> CSSub
+  | Xsub -> CSXsub
+  | Push -> CSPush
+  | Pull -> CSPull
+  | Pair -> CSPair
+
+let handle_frame (type a s) (ty : (a, s) Socket_type.t) (v : a connection) frame
+    =
+  Log.info (fun f -> f "Frame");
+  match (ty, v.conn_state) with
+  | Pub, _ -> manage_subscription v frame
+  | Xpub, _ ->
+      manage_frame_message v frame;
+      manage_subscription v frame
+  | Rep, CSRep (Building lst) -> manage_rep lst v frame
+  | _, _ -> manage_frame_message v frame
 
 let add_connection t connection =
   let* ready = Raw_connection.wait_until_ready connection in
@@ -316,20 +367,8 @@ let add_connection t connection =
         match v.frame_state with
         | Message _ -> Lwt_condition.wait v.cond
         | _ ->
-            (* TODO REP state update *)
             let+ frame = Raw_connection.read connection in
-            manage_subscription v frame;
-            let all_frames =
-              match v.frame_state with
-              | Message _ -> assert false
-              | Nothing -> [ frame ]
-              | Frames frames -> frame :: frames
-            in
-            if Frame.is_more frame then v.frame_state <- Frames all_frames
-            else (
-              v.frame_state <-
-                Message (List.rev all_frames |> Frame.splice_message_frames);
-              Lwt_condition.broadcast v.cond ())
+            handle_frame t.socket_type v frame
       in
       input_loop ()
     in
@@ -401,11 +440,65 @@ let rec receive_message t =
       Lwt_condition.broadcast cond ();
       Lwt.return msg
 
+let rec receive_message_rep t =
+  match
+    List.find_map
+      (fun t ->
+        match t.frame_state with
+        | Message msg -> Some (t, msg, t.cond, t.conn_state)
+        | _ -> None)
+      t.connections
+  with
+  | None ->
+      (* wait for an event somewhere *)
+      let* () =
+        t.connections_condition :: List.map (fun t -> t.cond) t.connections
+        |> List.map Lwt_condition.wait
+        |> Lwt.choose
+      in
+      receive_message_rep t
+  | Some (t, msg, cond, CSRep (Ready envelope)) ->
+      t.frame_state <- Nothing;
+      t.conn_state <- CSRep (Building []);
+      Lwt_condition.broadcast cond ();
+      Lwt.return (t, envelope, msg)
+  | _ -> assert false
+
 let recv : type a. (a, [> `Recv ]) t -> string Lwt.t =
  fun t ->
-  let (Yes_recv (socket_state, _socket_state_update)) = can_recv t in
+  let (Yes_recv (socket_state, socket_state_update)) = can_recv t in
   match socket_state with
-  | SPull -> receive_message t
+  | SPull | SSub _ -> receive_message t
+  | SRep _ ->
+      let+ c, address_envelope, msg = receive_message_rep t in
+      socket_state_update
+        (SRep
+           {
+             if_received = true;
+             last_received_connection_tag = Raw_connection.tag c.conn;
+             address_envelope;
+           });
+      msg
+  | SReq { if_sent; last_sent_connection_tag = tag } ->
+      if not if_sent then invalid_arg "Need to send a request before receiving"
+      else
+        let c =
+          List.find (fun c -> Raw_connection.tag c.conn = tag) t.connections
+        in
+        (* TODO disconnect. *)
+        let rec wait () =
+          match c.frame_state with
+          | Message msg ->
+              c.frame_state <- Nothing;
+              Lwt.return msg
+          | _ ->
+              let* () = Lwt_condition.wait c.cond in
+              wait ()
+        in
+        let+ msg = wait () in
+        socket_state_update
+          (SReq { if_sent = false; last_sent_connection_tag = "" });
+        msg
   | _ -> failwith "unimplemented"
 
 let recv_from _t = failwith "unimplemented"
@@ -456,12 +549,66 @@ let send : type a. (a, [> `Send ]) t -> string -> unit Lwt.t =
   let frames =
     List.map (fun x -> Message.to_frame x) (Message.list_of_string msg)
   in
-  let (Yes_send (socket_state, _socket_state_update)) = can_send t in
+  let (Yes_send (socket_state, socket_state_update)) = can_send t in
   match socket_state with
   | SPush -> (
       match find_available_connection t.connections with
       | None -> raise Not_found
       | Some c -> Raw_connection.write c.conn frames)
+  | SPub ->
+      Lwt_list.iter_s
+        (fun connection ->
+          let (CSPub { subscriptions }) = connection.conn_state in
+          if Trie.find subscriptions msg then
+            Raw_connection.write connection.conn frames
+          else Lwt.return_unit)
+        t.connections
+  | SXpub ->
+      Lwt_list.iter_s
+        (fun connection ->
+          let (CSXpub { subscriptions }) = connection.conn_state in
+          if Trie.find subscriptions msg then
+            Raw_connection.write connection.conn frames
+          else Lwt.return_unit)
+        t.connections
+  | SXsub _ ->
+      Lwt_list.iter_s
+        (fun connection -> Raw_connection.write connection.conn frames)
+        t.connections
+  | SRep { if_received; last_received_connection_tag = tag; address_envelope }
+    ->
+      if not if_received then
+        invalid_arg "Need to receive a request before sending a message"
+      else
+        let c =
+          List.find (fun c -> Raw_connection.tag c.conn = tag) t.connections
+        in
+        let* () =
+          Raw_connection.write c.conn
+            (address_envelope @ (Frame.delimiter_frame :: frames))
+        in
+        socket_state_update
+          (SRep
+             {
+               if_received = false;
+               last_received_connection_tag = "";
+               address_envelope = [];
+             });
+        Lwt.return_unit
+  | SReq { if_sent; last_sent_connection_tag = _ } -> (
+      if if_sent then
+        invalid_arg "Need to receive a reply before sending another message"
+      else
+        match find_available_connection t.connections with
+        | None -> raise Not_found
+        | Some c ->
+            socket_state_update
+              (SReq
+                 {
+                   if_sent = true;
+                   last_sent_connection_tag = Raw_connection.tag c.conn;
+                 });
+            Raw_connection.write c.conn (Frame.delimiter_frame :: frames))
   | _ -> failwith "unimplemented"
 
 let send_to _t = failwith "unimplemented"

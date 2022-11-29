@@ -18,30 +18,27 @@ let stack =
   in
   Tcpip_stack_socket.V4V6.connect udp tcp
 
-let pub_server port =
+let server kind port =
   let+ stack = stack in
-  let s = Socket.create_socket context Pub in
+  let s = Socket.create_socket context kind in
   Socket.bind s port stack;
   s
 
-let pull_server port =
-  let+ stack = stack in
-  let s = Socket.create_socket context Pull in
-  Socket.bind s port stack;
-  s
+let client kind port =
+  let* stack = stack in
+  let s = Socket.create_socket context kind in
+  let+ f = Socket.connect s "127.0.0.1" port stack in
+  (s, f)
+
+let pub_server = server Pub
+let pull_server = server Pull
 
 let sub_client port =
-  let* stack = stack in
-  let s = Socket.create_socket context Sub in
+  let+ s, f = client Sub port in
   Socket.subscribe s "";
-  let+ f = Socket.connect s "127.0.0.1" port stack in
   (s, f)
 
-let push_client port =
-  let* stack = stack in
-  let s = Socket.create_socket context Push in
-  let+ f = Socket.connect s "127.0.0.1" port stack in
-  (s, f)
+let push_client = client Push
 
 let or_timeout lwt =
   Lwt.pick
@@ -90,11 +87,36 @@ let push_pull_simple () =
   Alcotest.(check string) "2: recv bonjour" "bonjour2" b;
   Lwt.return_unit
 
+let req_rep_simple () =
+  let* rep = server Rep 4002 in
+  let* req1, f1 = client Req 4002 in
+  Logs.info (fun f -> f "REQ 1");
+  let* () = Lwt_unix.sleep 0.1 in
+  let* () = Socket.send req1 "bonjour" in
+  let* () = Lwt_unix.sleep 0.1 in
+  Logs.info (fun f -> f "bonjour");
+  let* a = Socket.recv rep |> or_timeout in
+  Alcotest.(check string) "1: recv bonjour" "bonjour" a;
+  let* () = Socket.send rep "hello" in
+  let* v = Socket.recv req1 |> or_timeout in
+  Alcotest.(check string) "1.5: recv hello" "hello" v;
+
+  let* req2, _f2 = client Req 4002 in
+  let* () = Socket.disconnect f1 in
+  let* () = Socket.send req2 "bonjour2" in
+  let* b = Socket.recv rep |> or_timeout in
+  Alcotest.(check string) "2: recv bonjour" "bonjour2" b;
+  let* () = Socket.send rep "hello2" in
+  let* v = Socket.recv req2 |> or_timeout in
+  Alcotest.(check string) "2.5: recv hello2" "hello2" v;
+  Lwt.return_unit
+
 (* execute *)
 let tests =
   [
     ("pub-sub", [ ("Simple", `Quick, pub_sub_simple) ]);
     ("push-pull", [ ("Simple", `Quick, push_pull_simple) ]);
+    ("req-rep", [ ("Simple", `Quick, req_rep_simple) ]);
   ]
 
 let () =
