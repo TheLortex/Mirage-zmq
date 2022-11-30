@@ -1357,94 +1357,64 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
     match res with
     | Ok `Eof ->
         Log.info (fun f -> f "Module Connection_tcp: Closing connection EOF");
-        ignore (Raw_connection.input connection (Close ""));
-        Raw_connection.close connection
+        Raw_connection.close_input connection;
+        Lwt.return_unit
     | Error e ->
         Log.warn (fun f ->
             f
               "Module Raw_connection_tcp: Error reading data from established \
                connection: %a"
               S.TCP.pp_error e);
-        ignore (Raw_connection.input connection (Close ""));
-        Raw_connection.close connection
+        Raw_connection.close_input connection;
+        Lwt.return_unit
     | Ok (`Data b) ->
         Log.info (fun f ->
             f "Module Connection_tcp: Read: %d bytes" (Cstruct.length b));
-        let act () =
-          let actions = Raw_connection.input connection (Data b) in
-          let rec deal_with_action_list actions =
-            match actions with
-            | [] -> process_input flow connection
-            | hd :: tl -> (
-                match hd with
-                | Raw_connection.Data b -> (
-                    Log.debug (fun f ->
-                        f "Module Connection_tcp: Connection FSM Write %d bytes"
-                          (Cstruct.length b));
-                    let* write_res = S.TCP.write flow b in
-                    match write_res with
-                    | Error _ ->
-                        Log.warn (fun f ->
-                            f
-                              "Module Connection_tcp: Error writing data to \
-                               established connection.");
-                        Lwt.return_unit
-                    | Ok () -> deal_with_action_list tl)
-                | Close s ->
-                    Log.warn (fun f ->
-                        f
-                          "Module Connection_tcp: Connection FSM Close due to: \
-                           %s"
-                          s);
-                    Lwt.return_unit)
-          in
-          deal_with_action_list actions
+        let* () =
+          match Raw_connection.input connection (Data b) with
+          | Result.Ok b -> (
+              Log.debug (fun f ->
+                  f "Module Connection_tcp: Connection FSM Write %d bytes"
+                    (Cstruct.lenv b));
+              let+ write_res = S.TCP.writev flow b in
+              match write_res with
+              | Error _ ->
+                  Log.warn (fun f ->
+                      f
+                        "Module Connection_tcp: Error writing data to \
+                         established connection.");
+                  Raw_connection.close_output connection
+              | Ok () -> ())
+          | Error (`Closed s) ->
+              Log.warn (fun f ->
+                  f "Module Connection_tcp: Connection FSM Close due to: %s" s);
+              S.TCP.close flow
         in
-        act ()
+        process_input flow connection
 
   (** Check the 'mailbox' and send outgoing data / close connection *)
   let rec process_output flow connection =
-    Log.debug (fun f -> f "W");
     let* actions = Raw_connection.output connection in
-    Log.debug (fun f -> f "O");
-    let* continue =
-      actions
-      |> Lwt_list.fold_left_s
-           (fun continue action ->
-             if not continue then Lwt.return_false
-             else
-               match action with
-               | Raw_connection.Close msg ->
-                   (* Stream closed *)
-                   Log.info (fun f ->
-                       f
-                         "Module Connection_tcp: Connection was instructed to \
-                          close: %s"
-                         msg);
-                   let+ () = S.TCP.close flow in
-                   false
-               | Data data -> (
-                   Log.debug (fun f ->
-                       f
-                         "Module Connection_tcp: Connection mailbox Write %d \
-                          bytes"
-                         (Cstruct.length data));
-                   let* write_res = S.TCP.write flow data in
-                   match write_res with
-                   | Error _ ->
-                       Log.warn (fun f ->
-                           f
-                             "Module Connection_tcp: Error writing data to \
-                              established connection.");
-                       let+ () = Raw_connection.close connection in
-                       false
-                   | Ok () -> Lwt.return_true))
-           true
-    in
-    if continue then process_output flow connection
-    else (
-      Log.debug (fun f -> f "process output is done");
-      Lwt.return_unit)
+    match actions with
+    | Error (`Closed msg) ->
+        Log.info (fun f ->
+            f "Module Connection_tcp: Connection was instructed to close: %s"
+              msg);
+        S.TCP.close flow
+    | Ok data -> (
+        Log.debug (fun f ->
+            f "Module Connection_tcp: Connection mailbox Write %d bytes"
+              (Cstruct.lenv data));
+        let* write_res = S.TCP.writev flow data in
+        match write_res with
+        | Error _ ->
+            Log.warn (fun f ->
+                f
+                  "Module Connection_tcp: Error writing data to established \
+                   connection.");
+            Raw_connection.close_output connection;
+            Lwt.return_unit
+        | Ok () -> process_output flow connection)
 
   let process_input flow connection =
     Lwt.catch

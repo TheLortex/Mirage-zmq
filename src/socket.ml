@@ -368,7 +368,7 @@ let add_connection t connection =
         | Message _ -> Lwt_condition.wait v.cond
         | _ ->
             let+ frame = Raw_connection.read connection in
-            handle_frame t.socket_type v frame
+            handle_frame t.socket_type v (Result.get_ok frame)
       in
       input_loop ()
     in

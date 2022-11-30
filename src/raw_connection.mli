@@ -3,9 +3,18 @@ module type S = sig
 
   val wait_until_ready : _ t -> bool Lwt.t
   val is_ready : _ t -> bool
+
+  (* write frames to the network *)
   val write : _ t -> Frame.t list -> unit Lwt.t
-  val read : _ t -> Frame.t Lwt.t
-  val close : _ t -> unit Lwt.t
+
+  (* read frames from the network*)
+  val read : _ t -> Frame.t Pipe.or_closed Lwt.t
+
+  (* notify Eof from network *)
+  val close_input : _ t -> unit
+
+  (* notify Eof to network *)
+  val close_output : _ t -> unit
 end
 
 include S
@@ -22,6 +31,6 @@ val tag : _ t -> string
 
 type action = Data of Cstruct.t | Close of string
 
-val input : _ t -> action -> action list
-val output : _ t -> action list Lwt.t
+val input : _ t -> action -> Cstruct.t list Pipe.or_closed
+val output : _ t -> Cstruct.t list Pipe.or_closed Lwt.t
 val is_send_queue_full : _ t -> bool

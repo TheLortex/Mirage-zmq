@@ -10,8 +10,13 @@ module type S = sig
   val wait_until_ready : _ t -> bool Lwt.t
   val is_ready : _ t -> bool
   val write : _ t -> Frame.t list -> unit Lwt.t
-  val read : _ t -> Frame.t Lwt.t
-  val close : _ t -> unit Lwt.t
+  val read : _ t -> Frame.t Pipe.or_closed Lwt.t
+
+  (* notify Eof from network *)
+  val close_input : _ t -> unit
+
+  (* notify Eof to network *)
+  val close_output : _ t -> unit
 end
 
 type greeting_stage = G0 | G1 of { incoming_as_server : bool }
@@ -51,7 +56,7 @@ type 's t =
       mutable stage : connection_stage;
       ready_condition : unit Lwt_condition.t;
       read_frame : Frame.t Pipe.t;
-      send_buffer : action list Pipe.t;
+      send_buffer : Cstruct.t list Pipe.t;
       mutable fragments_parser : Frame.t Angstrom.Buffered.state;
     }
       -> 's t
@@ -70,7 +75,7 @@ let init socket_type ?incoming_queue_size ?outgoing_queue_size
   in
   let greeting_init = Greeting.init security_mechanism in
   Pipe.push_or_drop send_buffer
-    [ Data (Greeting.new_greeting security_mechanism |> Cstruct.of_bytes) ];
+    [ Greeting.new_greeting security_mechanism |> Cstruct.of_bytes ];
   St
     {
       tag;
@@ -88,11 +93,11 @@ let handle_greeting_action (St t) action =
   | Greeting { state; stage = G0 }, Greeting.Set_server b ->
       t.stage <- Greeting { state; stage = G1 { incoming_as_server = b } };
       if b && Security_mechanism.get_as_server t.security_mechanism then
-        Some (Close "Both ends cannot be servers")
+        Some (Error (`Closed "Both ends cannot be servers"))
       else None
   | Greeting _, Check_mechanism s ->
       if s <> Security_mechanism.get_name_string t.security_mechanism then
-        Some (Close "Security Policy mismatch")
+        Some (Error (`Closed "Security Policy mismatch"))
       else None
   | Greeting _, Continue -> None
   | Greeting { stage = G1 { incoming_as_server }; _ }, Ok ->
@@ -103,16 +108,18 @@ let handle_greeting_action (St t) action =
       if Security_mechanism.send_command_after_greeting t.security_mechanism
       then
         Some
-          (Data
-             (Security_mechanism.first_command t.security_mechanism
-             |> Frame.to_cstruct))
+          (Ok
+             [
+               Security_mechanism.first_command t.security_mechanism
+               |> Frame.to_cstruct;
+             ])
       else None
   | _ -> assert false
 
 let handle_handshake_actions (St t) action =
   match (t.stage, action) with
   | Handshake _, Security_mechanism.Write frame ->
-      Some (Data (Frame.to_cstruct frame))
+      Some (Ok [ Frame.to_cstruct frame ])
   | Handshake _, Continue -> None
   | ( Handshake
         {
@@ -136,7 +143,7 @@ let handle_handshake_actions (St t) action =
           { incoming_identity = ""; incoming_as_server; incoming_socket_type };
       Lwt_condition.broadcast t.ready_condition ();
       None
-  | Handshake _, Close -> Some (Close "Handshake FSM error")
+  | Handshake _, Close -> Some (Error (`Closed "Handshake FSM error"))
   | ( Handshake ({ stage = H0 | H2 _; _ } as hs),
       Received_property ("Socket-Type", value) ) ->
       let socket_type = t.socket_type in
@@ -173,6 +180,13 @@ let handle_handshake_actions (St t) action =
       assert false
   | _ -> assert false
 
+let pipe_result_pair a b =
+  match (a, b) with
+  | Error (`Closed msg), Error (`Closed msg2) ->
+      Error (`Closed (msg ^ "; " ^ msg2))
+  | Error (`Closed msg), _ | _, Error (`Closed msg) -> Error (`Closed msg)
+  | Ok a, Ok b -> Ok (a @ b)
+
 let rec input_bytes (St t) bytes =
   match t.stage with
   | Greeting ({ state; _ } as greeting_state) ->
@@ -180,11 +194,13 @@ let rec input_bytes (St t) bytes =
       let next_state, actions, rest = Greeting.input state bytes in
 
       t.stage <- Greeting { greeting_state with state = next_state };
-      let action_list_1 =
+      let action =
         List.filter_map (handle_greeting_action (St t)) actions
+        |> List.fold_left pipe_result_pair (Ok [])
       in
-      if Cstruct.length rest > 0 then action_list_1 @ input_bytes (St t) rest
-      else action_list_1
+      if Cstruct.length rest > 0 then
+        pipe_result_pair action (input_bytes (St t) rest)
+      else action
   | Handshake ({ state; _ } as handshake_stage) -> (
       Log.debug (fun f -> f "Module Connection: Handshake -> FSM");
       t.fragments_parser <-
@@ -193,13 +209,14 @@ let rec input_bytes (St t) bytes =
       match Utils.consume_parser t.fragments_parser Frame.parser with
       | [], state ->
           t.fragments_parser <- state;
-          []
+          Ok []
       | [ frame ], parser_state ->
           t.fragments_parser <- parser_state;
           let command = Command.of_frame frame in
           let next_state, actions = Security_mechanism.fsm state command in
           t.stage <- Handshake { handshake_stage with state = next_state };
           List.filter_map (handle_handshake_actions (St t)) actions
+          |> List.fold_left pipe_result_pair (Ok [])
       | _ -> assert false)
   | Traffic _ ->
       Log.debug (fun f -> f "Module Connection: TRAFFIC -> FSM");
@@ -211,14 +228,14 @@ let rec input_bytes (St t) bytes =
       in
       t.fragments_parser <- next_state;
       List.iter (Pipe.push_or_drop t.read_frame) frames;
-      []
-  | Close -> [ Close "Connection FSM error" ]
+      Ok []
+  | Close -> Error (`Closed "Connection FSM error")
 
 let input (St t) = function
-  | Close _ ->
+  | Close msg ->
       t.stage <- Close;
-      Pipe.close t.read_frame;
-      []
+      Pipe.close t.read_frame msg;
+      Ok []
   | Data bytes -> input_bytes (St t) bytes
 
 let output (St t) = Pipe.pop t.send_buffer
@@ -233,11 +250,11 @@ let rec wait_until_ready (St t) =
 
 let is_ready (St t) = match t.stage with Traffic _ -> true | _ -> false
 let tag (St t) = t.tag
-let close (St t) = Pipe.push t.send_buffer [ Close "closed" ]
+let close_output (St t) = Pipe.close t.send_buffer "closed"
+let close_input (St t) = Pipe.close t.read_frame "closed"
 let is_send_queue_full (St t) = Pipe.is_full t.send_buffer
 
 let write (St t) frames =
-  List.map (fun f -> Data (Frame.to_cstruct f)) frames
-  |> Pipe.push t.send_buffer
+  List.map Frame.to_cstruct frames |> Pipe.push t.send_buffer
 
 let read (St t) = Pipe.pop t.read_frame
