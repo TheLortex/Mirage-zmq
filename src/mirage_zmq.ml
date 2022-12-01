@@ -1352,85 +1352,75 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
   let tag_of_tcp_connection ipaddr port = Fmt.str "TCP.%s.%d" ipaddr port
 
   (** Read input from flow, send the input to FSM and execute FSM actions *)
-  let rec process_input flow connection =
+  let rec process_input ?(tag = "") flow connection =
     let* res = S.TCP.read flow in
-    match res with
-    | Ok `Eof ->
-        Log.info (fun f -> f "Module Connection_tcp: Closing connection EOF");
-        Raw_connection.close_input connection;
-        Lwt.return_unit
-    | Error e ->
-        Log.warn (fun f ->
-            f
-              "Module Raw_connection_tcp: Error reading data from established \
-               connection: %a"
-              S.TCP.pp_error e);
-        Raw_connection.close_input connection;
-        Lwt.return_unit
-    | Ok (`Data b) ->
-        Log.info (fun f ->
-            f "Module Connection_tcp: Read: %d bytes" (Cstruct.length b));
-        let* () =
+    let* continue =
+      match res with
+      | Ok `Eof ->
+          Log.info (fun f ->
+              f "Module Connection_tcp(%s): Closing connection EOF" tag);
+          Lwt.return_false
+      | Error e ->
+          Log.warn (fun f ->
+              f
+                "Module Raw_connection_tcp(%s): Error reading data from \
+                 established connection: %a"
+                tag S.TCP.pp_error e);
+          Lwt.return_false
+      | Ok (`Data b) -> (
+          Log.info (fun f ->
+              f "Module Connection_tcp(%s): Read: %d bytes" tag
+                (Cstruct.length b));
           match Raw_connection.input connection (Data b) with
-          | Result.Ok b -> (
+          | Result.Ok [] -> Lwt.return_true
+          | Ok b ->
               Log.debug (fun f ->
-                  f "Module Connection_tcp: Connection FSM Write %d bytes"
-                    (Cstruct.lenv b));
+                  f "Module Connection_tcp(%s): Connection FSM Write %d bytes"
+                    tag (Cstruct.lenv b));
               let+ write_res = S.TCP.writev flow b in
-              match write_res with
+              (match write_res with
               | Error _ ->
                   Log.warn (fun f ->
                       f
-                        "Module Connection_tcp: Error writing data to \
-                         established connection.");
-                  Raw_connection.close_output connection
-              | Ok () -> ())
+                        "Module Connection_tcp(%s): Error writing data to \
+                         established connection."
+                        tag)
+              | Ok () -> ());
+              true
           | Error (`Closed s) ->
               Log.warn (fun f ->
-                  f "Module Connection_tcp: Connection FSM Close due to: %s" s);
-              S.TCP.close flow
-        in
-        process_input flow connection
+                  f "Module Connection_tcp(%s): Connection FSM Close due to: %s"
+                    tag s);
+              Lwt.return_false)
+    in
+    if continue then process_input ~tag flow connection else Lwt.return_unit
 
   (** Check the 'mailbox' and send outgoing data / close connection *)
-  let rec process_output flow connection =
+  let rec process_output ?(tag = "") flow connection =
     let* actions = Raw_connection.output connection in
     match actions with
     | Error (`Closed msg) ->
         Log.info (fun f ->
-            f "Module Connection_tcp: Connection was instructed to close: %s"
-              msg);
-        S.TCP.close flow
+            f
+              "Module Connection_tcp(%s): Connection was instructed to close: \
+               %s"
+              tag msg);
+        Lwt.return_unit
+    | Ok [] -> process_output ~tag flow connection
     | Ok data -> (
         Log.debug (fun f ->
-            f "Module Connection_tcp: Connection mailbox Write %d bytes"
+            f "Module Connection_tcp(%s): Connection mailbox Write %d bytes" tag
               (Cstruct.lenv data));
         let* write_res = S.TCP.writev flow data in
         match write_res with
         | Error _ ->
             Log.warn (fun f ->
                 f
-                  "Module Connection_tcp: Error writing data to established \
-                   connection.");
-            Raw_connection.close_output connection;
+                  "Module Connection_tcp(%s): Error writing data to \
+                   established connection."
+                  tag);
             Lwt.return_unit
-        | Ok () -> process_output flow connection)
-
-  let process_input flow connection =
-    Lwt.catch
-      (fun () -> process_input flow connection)
-      (fun exn ->
-        (* TODO: close *)
-        Log.err (fun f -> f "Exception: %a" Fmt.exn exn);
-        Lwt.fail exn)
-
-  let process_output flow connection =
-    Lwt.catch
-      (fun () -> process_output flow connection)
-      (fun exn ->
-        (* TODO: close *)
-        Log.err (fun f -> f "Exception: %a" Fmt.exn exn);
-        Lwt.fail exn)
+        | Ok () -> process_output ~tag flow connection)
 
   (* End of helper functions *)
 
@@ -1447,15 +1437,19 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
                (Socket.metadata socket))
             (tag_of_tcp_connection (Ipaddr.to_string dst) dst_port)
         in
-        Lwt.join
-          [
-            Socket.add_connection socket connection;
-            process_input flow connection;
-            process_output flow connection;
-          ]);
+        let* () =
+          Lwt.pick
+            [
+              Socket.add_connection socket connection;
+              process_input ~tag:"server" flow connection;
+              process_output ~tag:"server" flow connection;
+            ]
+        in
+        Log.info (fun f ->
+            f "Module Connection_tcp(server): client %s:%d disconnected "
+              (Ipaddr.to_string dst) dst_port);
+        S.TCP.close flow);
     S.listen s
-
-  type flow = S.TCP.flow
 
   let rec connect s addr port socket =
     let connection =
@@ -1468,21 +1462,42 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
     let ipaddr = Ipaddr.of_string_exn addr in
     (* TODO what if connection lost after successful one: should transparently work *)
     let* flow = S.TCP.create_connection (S.tcp s) (ipaddr, port) in
+    let disconnect = Lwt_switch.create () in
     match flow with
     | Ok flow ->
+        Lwt_switch.add_hook (Some disconnect) (fun () ->
+            Log.info (fun f ->
+                f
+                  "Module Connection_tcp(client): %a:%d asking for \
+                   disconnection"
+                  Ipaddr.pp ipaddr port);
+            Raw_connection.close_output connection;
+            S.TCP.close flow);
         Lwt.dont_wait
           (fun () ->
-            Lwt.join
-              [
-                Socket.add_connection socket connection;
-                process_input flow connection;
-                process_output flow connection;
-              ])
+            let+ () =
+              Lwt.join
+                [
+                  Socket.add_connection socket connection;
+                  (let+ () = process_input ~tag:"client" flow connection in
+                   Log.info (fun f ->
+                       f "Module Connection_tcp(client): process_input finished");
+                   Raw_connection.close_input connection);
+                  (let+ () = process_output ~tag:"client" flow connection in
+                   Log.info (fun f ->
+                       f
+                         "Module Connection_tcp(client): process_output \
+                          finished"));
+                ]
+            in
+            Log.info (fun f ->
+                f "Module Connection_tcp(client): server %s:%d disconnected "
+                  (Ipaddr.to_string ipaddr) port))
           raise;
         Log.info (fun f -> f "Spawned threads");
         let+ _ = Raw_connection.wait_until_ready connection in
         Log.info (fun f -> f "Traffic");
-        flow
+        disconnect
     | Error e ->
         Log.warn (fun f ->
             f
@@ -1491,7 +1506,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
               S.TCP.pp_error e);
         connect s addr port socket
 
-  let disconnect s = S.TCP.close s
+  let disconnect s = Lwt_switch.turn_off s
 end
 
 module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
@@ -1581,7 +1596,7 @@ end = struct
 
   let bind (U socket) port s = Lwt.async (fun () -> C_tcp.listen s port socket)
 
-  type flow = C_tcp.flow
+  type flow = Lwt_switch.t
 
   let connect (U socket) ipaddr port s = C_tcp.connect s ipaddr port socket
   let disconnect f = C_tcp.disconnect f

@@ -90,11 +90,11 @@ let push_pull_simple () =
 let req_rep_simple () =
   let* rep = server Rep 4002 in
   let* req1, f1 = client Req 4002 in
-  Logs.info (fun f -> f "REQ 1");
+  Logs.app (fun f -> f "REQ 1");
   let* () = Lwt_unix.sleep 0.1 in
   let* () = Socket.send req1 "bonjour" in
   let* () = Lwt_unix.sleep 0.1 in
-  Logs.info (fun f -> f "bonjour");
+  Logs.app (fun f -> f "bonjour");
   let* a = Socket.recv rep |> or_timeout in
   Alcotest.(check string) "1: recv bonjour" "bonjour" a;
   let* () = Socket.send rep "hello" in
@@ -102,10 +102,11 @@ let req_rep_simple () =
   Alcotest.(check string) "1.5: recv hello" "hello" v;
 
   let* req2, _f2 = client Req 4002 in
+  Logs.app (fun f -> f "client 1 disconnects");
   let* () = Socket.disconnect f1 in
   let* () = Socket.send req2 "bonjour2" in
   let* b = Socket.recv rep |> or_timeout in
-  Alcotest.(check string) "2: recv bonjour" "bonjour2" b;
+  Alcotest.(check string) "2.1: recv bonjour" "bonjour2" b;
   let* () = Socket.send rep "hello2" in
   let* v = Socket.recv req2 |> or_timeout in
   Alcotest.(check string) "2.5: recv hello2" "hello2" v;
@@ -120,6 +121,6 @@ let tests =
   ]
 
 let () =
-  Logs.set_level (Some Debug);
+  Logs.set_level (Some Info);
   Logs.set_reporter (Logs_fmt.reporter ());
   Lwt_main.run @@ Alcotest_lwt.run "mirage-zmq" tests

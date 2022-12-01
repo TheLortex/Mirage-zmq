@@ -337,7 +337,6 @@ let default_conn_state : type a s. (a, s) t -> a connection_state =
 
 let handle_frame (type a s) (ty : (a, s) Socket_type.t) (v : a connection) frame
     =
-  Log.info (fun f -> f "Frame");
   match (ty, v.conn_state) with
   | Pub, _ -> manage_subscription v frame
   | Xpub, _ ->
@@ -362,21 +361,36 @@ let add_connection t connection =
     in
     t.connections <- v :: t.connections;
     Lwt_condition.broadcast t.connections_condition ();
+    let exception Closed of string in
     let rec input_loop () =
       let* () =
         match v.frame_state with
         | Message _ -> Lwt_condition.wait v.cond
-        | _ ->
+        | _ -> (
             let+ frame = Raw_connection.read connection in
-            handle_frame t.socket_type v (Result.get_ok frame)
+            match frame with
+            | Error (`Closed e) -> raise (Closed e)
+            | Ok frame -> handle_frame t.socket_type v frame)
       in
       input_loop ()
     in
-    Lwt.catch
-      (fun () -> input_loop ())
-      (fun _ ->
-        Logs.warn (fun f -> f "Connection lost");
-        (*TODO which exn is expected*)
+    Lwt.finalize
+      (fun () ->
+        Lwt.catch
+          (fun () -> input_loop ())
+          (function
+            | Closed msg ->
+                Log.info (fun f -> f "Socket: Connection closed: %s" msg);
+                Lwt.return_unit
+            | Lwt.Canceled ->
+                Log.info (fun f -> f "Socket: Connection cancelled");
+                Lwt.return_unit
+            | e ->
+                Log.err (fun f ->
+                    f "Socket: Connection lost because of exception: %s"
+                      (Printexc.to_string e));
+                raise e))
+      (fun () ->
         t.connections <-
           List.filter (fun { conn; _ } -> conn != connection) t.connections;
         Lwt_condition.broadcast t.connections_condition ();
@@ -490,6 +504,7 @@ let recv : type a. (a, [> `Recv ]) t -> string Lwt.t =
           match c.frame_state with
           | Message msg ->
               c.frame_state <- Nothing;
+              Lwt_condition.broadcast c.cond ();
               Lwt.return msg
           | _ ->
               let* () = Lwt_condition.wait c.cond in
