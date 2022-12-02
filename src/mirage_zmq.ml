@@ -26,6 +26,7 @@ include Socket
    type connection_fsm_data = Input_data of Cstruct.t | End_of_connection
 *)
 module Context = Context
+module Message = Message
 include Security_mechanism
 
 let src = Logs.Src.create "zmq" ~doc:"ZeroMQ"

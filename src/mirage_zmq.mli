@@ -21,7 +21,9 @@ exception Incorrect_use_of_API of string
 exception Connection_closed
 (** Raised when the connection that is the target of send/source of recv unexpectedly closes. Catch this exception to re-try the current operation on another connection if available. *)
 
-type identity_and_data = { identity : string; data : string }
+module Message = Message
+
+type identity_and_data = { identity : string; data : Message.t list }
 
 (** NULL and PLAIN security mechanisms are implemented in Mirage-zmq. *)
 type mechanism_type = NULL | PLAIN

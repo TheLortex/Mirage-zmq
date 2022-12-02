@@ -5,24 +5,20 @@ let src = Logs.Src.create "zmq.socket" ~doc:"ZeroMQ"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
-type identity_and_data = { identity : string; data : string }
+type identity_and_data = { identity : string; data : Message.t list }
 
 module Sub_management = struct
-  let subscription_frame content =
-    Frame.make_frame
-      (Bytes.cat (Bytes.make 1 (Char.chr 1)) (Bytes.of_string content))
-      ~if_more:false ~if_command:false
+  let subscription_msg content =
+    Message.make (String.cat (String.make 1 (Char.chr 1)) content) ~more:false
 
-  let unsubscription_frame content =
-    Frame.make_frame
-      (Bytes.cat (Bytes.make 1 (Char.chr 0)) (Bytes.of_string content))
-      ~if_more:false ~if_command:false
+  let unsubscription_msg content =
+    Message.make (String.cat (String.make 1 (Char.chr 0)) content) ~more:false
 end
 
 type rep_state = {
   if_received : bool;
   last_received_connection_tag : string;
-  address_envelope : Frame.t list;
+  address_envelope : Message.t list;
 }
 
 type req_state = { if_sent : bool; last_sent_connection_tag : string }
@@ -43,7 +39,7 @@ type ('s, 'p) socket_state =
   | SPull : (pull, [< `Recv ]) socket_state
   | SPair : pair_state -> (pair, [< `Send | `Recv ]) socket_state
 
-type conn_rep_state = Building of Frame.t list | Ready of Frame.t list
+type conn_rep_state = Building of Message.t list | Ready of Message.t list
 
 type 's connection_state =
   | CSXpub : sub_state -> xpub connection_state
@@ -58,7 +54,10 @@ type 's connection_state =
   | CSPull : pull connection_state
   | CSPair : pair connection_state
 
-type frame_state = Nothing | Frames of Frame.t list | Message of string
+type frame_state =
+  | Nothing
+  | Frames of Message.t list
+  | Message of Message.t list
 
 type 's connection = {
   conn : 's Raw_connection.t;
@@ -261,62 +260,54 @@ let initial_traffic_messages (type a b) (t : (a, b) t) =
   match t.socket_states with
   | SSub { subscriptions } ->
       if not (Trie.is_empty subscriptions) then
-        List.map
-          (fun x -> Sub_management.subscription_frame x)
-          (Trie.to_list subscriptions)
+        List.map Sub_management.subscription_msg (Trie.to_list subscriptions)
       else []
   | SXsub { subscriptions } ->
       if not (Trie.is_empty subscriptions) then
-        List.map
-          (fun x -> Sub_management.subscription_frame x)
-          (Trie.to_list subscriptions)
+        List.map Sub_management.subscription_msg (Trie.to_list subscriptions)
       else []
   | _ -> []
 
 type action = Subscribe | Unsubscribe | Ignore
 
-let match_subscription_signature frame =
-  if
-    (not (Frame.is_more frame))
-    && (not (Frame.is_command frame))
-    && not (Frame.is_long frame)
-  then
-    let first_char = (Bytes.to_string (Frame.get_body frame)).[0] in
+let match_subscription_signature (msg : Message.t) =
+  if not msg.more then
+    let first_char = msg.content.[0] in
     if first_char = Char.chr 1 then Subscribe
     else if first_char = Char.chr 0 then Unsubscribe
     else Ignore
   else Ignore
 
-let manage_subscription (type a) (t : a connection) frame =
+let manage_subscription (type a) (t : a connection) msg =
   match t.conn_state with
   | CSPub s | CSXpub s -> (
-      match match_subscription_signature frame with
+      match match_subscription_signature msg with
       | Unsubscribe ->
-          let body = Bytes.to_string (Frame.get_body frame) in
+          let body = msg.content in
           let sub = String.sub body 1 (String.length body - 1) in
           Trie.delete s.subscriptions sub
       | Subscribe ->
-          let body = Bytes.to_string (Frame.get_body frame) in
+          let body = msg.content in
           let sub = String.sub body 1 (String.length body - 1) in
           Trie.insert s.subscriptions sub
       | Ignore -> ())
   | _ -> ()
 
-let manage_frame_message v frame =
-  let all_frames =
+let manage_frame_message v msg =
+  let all_msgs =
     match v.frame_state with
     | Message _ -> assert false
-    | Nothing -> [ frame ]
-    | Frames frames -> frame :: frames
+    | Nothing -> [ msg ]
+    | Frames msgs -> msg :: msgs
   in
-  if Frame.is_more frame then v.frame_state <- Frames all_frames
+  if msg.more then v.frame_state <- Frames all_msgs
   else (
     Log.info (fun f -> f "Message ready");
-    v.frame_state <- Message (List.rev all_frames |> Frame.splice_message_frames);
+    v.frame_state <- Message (List.rev all_msgs);
     Lwt_condition.broadcast v.cond ())
 
 let manage_rep lst v frame =
-  if Frame.is_delimiter_frame frame then
+  if Message.is_delimiter frame then
     v.conn_state <- CSRep (Ready (List.rev lst))
   else v.conn_state <- CSRep (Building (frame :: lst))
 
@@ -478,11 +469,22 @@ let rec receive_message_rep t =
       Lwt.return (t, envelope, msg)
   | _ -> assert false
 
-let recv : type a. (a, [> `Recv ]) t -> string Lwt.t =
+(* TODO disconnect. *)
+let rec receive_message_conn c =
+  match c.frame_state with
+  | Message msgs ->
+      c.frame_state <- Nothing;
+      Lwt_condition.broadcast c.cond ();
+      Lwt.return msgs
+  | _ ->
+      let* () = Lwt_condition.wait c.cond in
+      receive_message_conn c
+
+let recv_multipart : type a. (a, [> `Recv ]) t -> Message.t list Lwt.t =
  fun t ->
   let (Yes_recv (socket_state, socket_state_update)) = can_recv t in
   match socket_state with
-  | SPull | SSub _ -> receive_message t
+  | SPull | SSub _ | SXpub | SXsub _ -> receive_message t
   | SRep _ ->
       let+ c, address_envelope, msg = receive_message_rep t in
       socket_state_update
@@ -499,22 +501,29 @@ let recv : type a. (a, [> `Recv ]) t -> string Lwt.t =
         let c =
           List.find (fun c -> Raw_connection.tag c.conn = tag) t.connections
         in
-        (* TODO disconnect. *)
-        let rec wait () =
-          match c.frame_state with
-          | Message msg ->
-              c.frame_state <- Nothing;
-              Lwt_condition.broadcast c.cond ();
-              Lwt.return msg
-          | _ ->
-              let* () = Lwt_condition.wait c.cond in
-              wait ()
-        in
-        let+ msg = wait () in
+        let+ msg = receive_message_conn c in
         socket_state_update
           (SReq { if_sent = false; last_sent_connection_tag = "" });
         msg
-  | _ -> failwith "unimplemented"
+  | SDealer { request_order_queue } ->
+      if Queue.is_empty request_order_queue then
+        invalid_arg "Dealer: you need to send requests first!"
+      else
+        let tag = Queue.pop request_order_queue in
+        (* what if connection disappeared ? *)
+        let c =
+          List.find (fun c -> Raw_connection.tag c.conn = tag) t.connections
+        in
+        receive_message_conn c
+  | SPair _ -> (
+      match t.connections with
+      | [] -> raise Not_found
+      | _ :: _ :: _ -> assert false
+      | [ c ] -> receive_message_conn c)
+
+let recv s =
+  let+ msgs = recv_multipart s in
+  Message.merge msgs
 
 let recv_from _t = failwith "unimplemented"
 
@@ -559,36 +568,34 @@ let find_available_connection connections =
       && not (Raw_connection.is_send_queue_full c.conn))
     connections
 
-let send : type a. (a, [> `Send ]) t -> string -> unit Lwt.t =
- fun t msg ->
-  let frames =
-    List.map (fun x -> Message.to_frame x) (Message.list_of_string msg)
-  in
+let send_multipart : type a. (a, [> `Send ]) t -> Message.t list -> unit Lwt.t =
+ fun t msgs ->
   let (Yes_send (socket_state, socket_state_update)) = can_send t in
+  assert (List.length msgs > 0);
   match socket_state with
   | SPush -> (
       match find_available_connection t.connections with
       | None -> raise Not_found
-      | Some c -> Raw_connection.write c.conn frames)
+      | Some c -> Raw_connection.write c.conn msgs)
   | SPub ->
       Lwt_list.iter_s
         (fun connection ->
           let (CSPub { subscriptions }) = connection.conn_state in
-          if Trie.find subscriptions msg then
-            Raw_connection.write connection.conn frames
+          if Trie.find subscriptions (List.hd msgs).content then
+            Raw_connection.write connection.conn msgs
           else Lwt.return_unit)
         t.connections
   | SXpub ->
       Lwt_list.iter_s
         (fun connection ->
           let (CSXpub { subscriptions }) = connection.conn_state in
-          if Trie.find subscriptions msg then
-            Raw_connection.write connection.conn frames
+          if Trie.find subscriptions (List.hd msgs).content then
+            Raw_connection.write connection.conn msgs
           else Lwt.return_unit)
         t.connections
   | SXsub _ ->
       Lwt_list.iter_s
-        (fun connection -> Raw_connection.write connection.conn frames)
+        (fun connection -> Raw_connection.write connection.conn msgs)
         t.connections
   | SRep { if_received; last_received_connection_tag = tag; address_envelope }
     ->
@@ -600,7 +607,7 @@ let send : type a. (a, [> `Send ]) t -> string -> unit Lwt.t =
         in
         let* () =
           Raw_connection.write c.conn
-            (address_envelope @ (Frame.delimiter_frame :: frames))
+            (address_envelope @ (Message.delimiter :: msgs))
         in
         socket_state_update
           (SRep
@@ -623,8 +630,12 @@ let send : type a. (a, [> `Send ]) t -> string -> unit Lwt.t =
                    if_sent = true;
                    last_sent_connection_tag = Raw_connection.tag c.conn;
                  });
-            Raw_connection.write c.conn (Frame.delimiter_frame :: frames))
+            Raw_connection.write c.conn (Message.delimiter :: msgs))
   | _ -> failwith "unimplemented"
+
+let send t msg =
+  let msgs = [ Message.make msg ~more:false ] in
+  send_multipart t msgs
 
 let send_to _t = failwith "unimplemented"
 let send_blocking _t = failwith "unimplemented"
@@ -668,11 +679,11 @@ let subscribe (type a) (t : (a, [> `Sub ]) t) subscription =
   | SSub { subscriptions } ->
       Trie.insert subscriptions subscription;
       send_message_to_all_active_connections t.connections
-        (Sub_management.subscription_frame subscription)
+        (Sub_management.subscription_msg subscription)
   | SXsub { subscriptions } ->
       Trie.insert subscriptions subscription;
       send_message_to_all_active_connections t.connections
-        (Sub_management.subscription_frame subscription)
+        (Sub_management.subscription_msg subscription)
 
 let unsubscribe (type a) (t : (a, [> `Sub ]) t) subscription =
   let (Yes_subscribe socket_state) = can_subscribe t in
@@ -680,8 +691,8 @@ let unsubscribe (type a) (t : (a, [> `Sub ]) t) subscription =
   | SSub { subscriptions } ->
       Trie.delete subscriptions subscription;
       send_message_to_all_active_connections t.connections
-        (Sub_management.unsubscription_frame subscription)
+        (Sub_management.unsubscription_msg subscription)
   | SXsub { subscriptions } ->
       Trie.delete subscriptions subscription;
       send_message_to_all_active_connections t.connections
-        (Sub_management.unsubscription_frame subscription)
+        (Sub_management.unsubscription_msg subscription)

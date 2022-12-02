@@ -1,4 +1,4 @@
-type identity_and_data = { identity : string; data : string }
+type identity_and_data = { identity : string; data : Message.t list }
 type ('s, 'a) t
 
 val create_socket :
@@ -11,8 +11,10 @@ val create_socket :
 val subscribe : (_, [> `Sub ]) t -> string -> unit
 val unsubscribe : (_, [> `Sub ]) t -> string -> unit
 val recv : (_, [> `Recv ]) t -> string Lwt.t
+val recv_multipart : (_, [> `Recv ]) t -> Message.t list Lwt.t
 val recv_from : (_, [> `Recv_from ]) t -> identity_and_data Lwt.t
 val send : (_, [> `Send ]) t -> string -> unit Lwt.t
+val send_multipart : (_, [> `Send ]) t -> Message.t list -> unit Lwt.t
 val send_to : (_, [> `Send_to ]) t -> identity_and_data -> unit Lwt.t
 val send_blocking : (_, [> `Send ]) t -> string -> unit Lwt.t
 

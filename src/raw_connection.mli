@@ -1,23 +1,19 @@
-module type S = sig
-  type 'a t
+type 'a t
 
-  val wait_until_ready : _ t -> bool Lwt.t
-  val is_ready : _ t -> bool
+val wait_until_ready : _ t -> bool Lwt.t
+val is_ready : _ t -> bool
 
-  (* write frames to the network *)
-  val write : _ t -> Frame.t list -> unit Lwt.t
+(* write frames to the network *)
+val write : _ t -> Message.t list -> unit Lwt.t
 
-  (* read frames from the network*)
-  val read : _ t -> Frame.t Pipe.or_closed Lwt.t
+(* read frames from the network*)
+val read : _ t -> Message.t Pipe.or_closed Lwt.t
 
-  (* notify Eof from network *)
-  val close_input : _ t -> unit
+(* notify Eof from network *)
+val close_input : _ t -> unit
 
-  (* notify Eof to network *)
-  val close_output : _ t -> unit
-end
-
-include S
+(* notify Eof to network *)
+val close_output : _ t -> unit
 
 val init :
   ('a, _) Socket_type.t ->

@@ -6,11 +6,11 @@ val to_frame : t -> Frame.t
 val get_name : t -> string
 (** Get name of the command (without length byte) *)
 
-val get_data : t -> bytes
+val get_data : t -> string
 (** Get data of the command *)
 
 val of_frame : Frame.t -> t
 (** Construct a command from the enclosing frame *)
 
-val make_command : string -> bytes -> t
+val make : name:string -> data:string -> t
 (** Construct a command from given name and data *)

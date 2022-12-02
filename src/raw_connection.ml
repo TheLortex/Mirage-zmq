@@ -4,20 +4,10 @@ let src = Logs.Src.create "zmq.raw_connection" ~doc:"ZeroMQ"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
-module type S = sig
-  type 'a t
-
-  val wait_until_ready : _ t -> bool Lwt.t
-  val is_ready : _ t -> bool
-  val write : _ t -> Frame.t list -> unit Lwt.t
-  val read : _ t -> Frame.t Pipe.or_closed Lwt.t
-
-  (* notify Eof from network *)
-  val close_input : _ t -> unit
-
-  (* notify Eof to network *)
-  val close_output : _ t -> unit
-end
+let serialize_frame f =
+  let ser = Faraday.create 256 in
+  Frame.serialize ser f;
+  Faraday.serialize_to_bigstring ser |> Cstruct.of_bigarray
 
 type greeting_stage = G0 | G1 of { incoming_as_server : bool }
 
@@ -55,7 +45,7 @@ type 's t =
       security_mechanism : Security_mechanism.t;
       mutable stage : connection_stage;
       ready_condition : unit Lwt_condition.t;
-      read_frame : Frame.t Pipe.t;
+      read_frame : Message.t Pipe.t;
       send_buffer : Cstruct.t list Pipe.t;
       mutable fragments_parser : Frame.t Angstrom.Buffered.state;
     }
@@ -111,7 +101,7 @@ let handle_greeting_action (St t) action =
           (Ok
              [
                Security_mechanism.first_command t.security_mechanism
-               |> Frame.to_cstruct;
+               |> serialize_frame;
              ])
       else None
   | _ -> assert false
@@ -119,7 +109,7 @@ let handle_greeting_action (St t) action =
 let handle_handshake_actions (St t) action =
   match (t.stage, action) with
   | Handshake _, Security_mechanism.Write frame ->
-      Some (Ok [ Frame.to_cstruct frame ])
+      Some (Ok [ serialize_frame frame ])
   | Handshake _, Continue -> None
   | ( Handshake
         {
@@ -227,7 +217,10 @@ let rec input_bytes (St t) bytes =
         Utils.consume_parser t.fragments_parser Frame.parser
       in
       t.fragments_parser <- next_state;
-      List.iter (Pipe.push_or_drop t.read_frame) frames;
+      (* TODO: what if command ? *)
+      List.iter
+        (fun f -> Pipe.push_or_drop t.read_frame (Message.of_frame f))
+        frames;
       Ok []
   | Close -> Error (`Closed "Connection FSM error")
 
@@ -253,8 +246,9 @@ let tag (St t) = t.tag
 let close_output (St t) = Pipe.close t.send_buffer "closed"
 let close_input (St t) = Pipe.close t.read_frame "closed"
 let is_send_queue_full (St t) = Pipe.is_full t.send_buffer
+let serialize_message f = serialize_frame (Message.to_frame f)
 
-let write (St t) frames =
-  List.map Frame.to_cstruct frames |> Pipe.push t.send_buffer
+let write (St t) msgs =
+  List.map serialize_message msgs |> Pipe.push t.send_buffer
 
 let read (St t) = Pipe.pop t.read_frame
