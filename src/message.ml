@@ -1,20 +1,14 @@
+type t = { content : string; more : bool }
 
-type t = { size : int; if_long : bool; if_more : bool; body : bytes }
+let make content ~more = { content; more }
+let to_frame t = Frame.make t.content ~more:t.more ~command:false
 
-let of_string ?(if_long = false) ?(if_more = false) msg =
-  let length = String.length msg in
-  if length > 255 && not if_long then
-    invalid_arg "Must be long message"
-  else { size = length; if_long; if_more; body = Bytes.of_string msg }
+let of_frame frame =
+  let content = Frame.get_body frame in
+  let more = Frame.is_more frame in
+  assert (not (Frame.is_command frame));
+  { content; more }
 
-let list_of_string msg =
-  let length = String.length msg in
-  (* Assume Sys.max_string_length < max_int *)
-  if length > 255 then
-    (* Make a LONG message *)
-    [ of_string msg ~if_long:true ~if_more:false ]
-  else
-    (* Make short messages *)
-    [ of_string msg ~if_long:false ~if_more:false ]
-
-let to_frame t = Frame.make_frame t.body ~if_more:t.if_more ~if_command:false
+let is_delimiter t = String.length t.content = 0
+let delimiter = make "" ~more:true
+let merge lst = List.map (fun t -> t.content) lst |> String.concat ""

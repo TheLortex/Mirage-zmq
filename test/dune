@@ -1,0 +1,3 @@
+(test
+ (name main)
+ (libraries alcotest-lwt mirage-zmq tcpip.stack-socket logs.fmt))

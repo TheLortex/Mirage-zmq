@@ -1,7 +1,7 @@
 type t
 
 type action =
-  | Write of bytes
+  | Write of Frame.t
   | Continue
   | Close
   | Received_property of string * string
@@ -25,7 +25,7 @@ val get_as_server : t -> bool
 val get_as_client : t -> bool
 (** Whether the socket is a PLAIN client (always false if mechanism is NULL) *)
 
-val if_send_command_after_greeting : t -> bool
+val send_command_after_greeting : t -> bool
 
 val init : security_data -> socket_metadata -> t
 (** Initialise a t from security mechanism data and socket metadata *)
@@ -34,7 +34,7 @@ val init : security_data -> socket_metadata -> t
     (** If the socket is a PLAIN mechanism client, it needs to send the HELLO command first *)
 *)
 
-val first_command : t -> bytes
+val first_command : t -> Frame.t
 
 val fsm : t -> Command.t -> t * action list
 (** FSM for handling the handshake *)

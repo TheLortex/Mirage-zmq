@@ -1,4 +1,4 @@
 (library
  (name mirage_zmq)
  (public_name mirage-zmq)
- (libraries lwt lwt-dllist tcpip logs angstrom))
+ (libraries lwt lwt-dllist tcpip logs angstrom faraday mirage-zmq.trie))
