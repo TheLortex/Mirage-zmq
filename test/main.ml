@@ -112,12 +112,37 @@ let req_rep_simple () =
   Alcotest.(check string) "2.5: recv hello2" "hello2" v;
   Lwt.return_unit
 
+let req_router_dealer_rep_simple () =
+  let* router = server Router 4003 in
+  let* dealer = server Dealer 4004 in
+  let* req, _ = client Req 4003 in
+  let* rep, _ = client Rep 4004 in
+
+  let* () = Socket.send req "hello" in
+  let* identity_data = Socket.recv_from router in
+  let* () = Socket.send_multipart dealer identity_data.data in
+  let* data = Socket.recv rep in
+  Alcotest.(check string) "rep: recv hello" "hello" data;
+  let* () = Socket.send rep "yes" in
+  let* dealer_yes = Socket.recv dealer in
+  let* () =
+    Socket.send_to router
+      {
+        identity = identity_data.identity;
+        data = [ { content = dealer_yes; more = false } ];
+      }
+  in
+  let+ req_yes = Socket.recv req in
+  Alcotest.(check string) "req: recv yes" "yes" req_yes
+
 (* execute *)
 let tests =
   [
     ("pub-sub", [ ("Simple", `Quick, pub_sub_simple) ]);
     ("push-pull", [ ("Simple", `Quick, push_pull_simple) ]);
     ("req-rep", [ ("Simple", `Quick, req_rep_simple) ]);
+    ( "req-router-dealer-rep",
+      [ ("Simple", `Quick, req_router_dealer_rep_simple) ] );
   ]
 
 let () =

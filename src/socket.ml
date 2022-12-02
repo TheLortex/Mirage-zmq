@@ -443,7 +443,7 @@ let rec receive_message t =
   | Some (t, msg, cond) ->
       t.frame_state <- Nothing;
       Lwt_condition.broadcast cond ();
-      Lwt.return msg
+      Lwt.return (t, msg)
 
 let rec receive_message_rep t =
   match
@@ -484,7 +484,7 @@ let recv_multipart : type a. (a, [> `Recv ]) t -> Message.t list Lwt.t =
  fun t ->
   let (Yes_recv (socket_state, socket_state_update)) = can_recv t in
   match socket_state with
-  | SPull | SSub _ | SXpub | SXsub _ -> receive_message t
+  | SPull | SSub _ | SXpub | SXsub _ -> receive_message t |> Lwt.map snd
   | SRep _ ->
       let+ c, address_envelope, msg = receive_message_rep t in
       socket_state_update
@@ -525,7 +525,32 @@ let recv s =
   let+ msgs = recv_multipart s in
   Message.merge msgs
 
-let recv_from _t = failwith "unimplemented"
+type ('a, 'b) can_recv_from =
+  | Yes_recv_from :
+      ('a, [ `Recv_from ]) socket_state
+      -> ('a, [> `Recv_from ]) can_recv_from
+  | No_recv_from : ('a, [< `Send | `Sub | `Recv | `Send_to ]) can_recv_from
+
+let can_recv_from : type a b. (a, b) t -> (a, b) can_recv_from =
+ fun t ->
+  match t.socket_type with
+  | Router -> Yes_recv_from SRouter
+  | Push -> No_recv_from
+  | Pub -> No_recv_from
+  | Pair -> No_recv_from
+  | Xpub -> No_recv_from
+  | Sub -> No_recv_from
+  | Xsub -> No_recv_from
+  | Req -> No_recv_from
+  | Rep -> No_recv_from
+  | Pull -> No_recv_from
+  | Dealer -> No_recv_from
+
+let recv_from : type a. (a, [> `Recv_from ]) t -> identity_and_data Lwt.t =
+ fun t ->
+  let (Yes_recv_from SRouter) = can_recv_from t in
+  let+ c, msg = receive_message t in
+  { identity = Raw_connection.incoming_identity c.conn; data = msg }
 
 (* SEND *)
 
@@ -631,13 +656,54 @@ let send_multipart : type a. (a, [> `Send ]) t -> Message.t list -> unit Lwt.t =
                    last_sent_connection_tag = Raw_connection.tag c.conn;
                  });
             Raw_connection.write c.conn (Message.delimiter :: msgs))
-  | _ -> failwith "unimplemented"
+  | SDealer { request_order_queue } -> (
+      match find_available_connection t.connections with
+      | None -> raise Not_found
+      | Some c ->
+          Queue.push (Raw_connection.tag c.conn) request_order_queue;
+          Raw_connection.write c.conn (Message.delimiter :: msgs))
+  | SPair _ -> failwith "unimplemented"
 
 let send t msg =
   let msgs = [ Message.make msg ~more:false ] in
   send_multipart t msgs
 
-let send_to _t = failwith "unimplemented"
+type ('a, 'b) can_send_to =
+  | Yes_send_to :
+      ('a, [ `Send_to ]) socket_state
+      -> ('a, [> `Send_to ]) can_send_to
+  | No_send_to : ('a, [< `Send | `Sub | `Recv | `Recv_from ]) can_send_to
+
+let can_send_to : type a b. (a, b) t -> (a, b) can_send_to =
+ fun t ->
+  match t.socket_type with
+  | Router -> Yes_send_to SRouter
+  | Push -> No_send_to
+  | Pub -> No_send_to
+  | Pair -> No_send_to
+  | Xpub -> No_send_to
+  | Sub -> No_send_to
+  | Xsub -> No_send_to
+  | Req -> No_send_to
+  | Rep -> No_send_to
+  | Pull -> No_send_to
+  | Dealer -> No_send_to
+
+let send_to : type a. (a, [> `Send_to ]) t -> identity_and_data -> unit Lwt.t =
+ fun t { identity; data } ->
+  let (Yes_send_to SRouter) = can_send_to t in
+  let c =
+    List.find
+      (fun c -> Raw_connection.incoming_identity c.conn = identity)
+      t.connections
+  in
+  let msgs =
+    match Raw_connection.incoming_socket_type c.conn with
+    | Socket_type.U Req -> Message.delimiter :: data
+    | _ -> data
+  in
+  Raw_connection.write c.conn msgs
+
 let send_blocking _t = failwith "unimplemented"
 
 (* SUBSCRIBE *)

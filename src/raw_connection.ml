@@ -243,6 +243,17 @@ let rec wait_until_ready (St t) =
 
 let is_ready (St t) = match t.stage with Traffic _ -> true | _ -> false
 let tag (St t) = t.tag
+
+let incoming_identity (St t) =
+  match t.stage with
+  | Traffic tr -> tr.incoming_identity
+  | _ -> invalid_arg "connection is not ready"
+
+let incoming_socket_type (St t) =
+  match t.stage with
+  | Traffic tr -> Socket_type.U tr.incoming_socket_type
+  | _ -> invalid_arg "connection is not ready"
+
 let close_output (St t) = Pipe.close t.send_buffer "closed"
 let close_input (St t) = Pipe.close t.read_frame "closed"
 let is_send_queue_full (St t) = Pipe.is_full t.send_buffer

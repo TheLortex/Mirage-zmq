@@ -24,6 +24,8 @@ val init :
   'a t
 
 val tag : _ t -> string
+val incoming_identity : _ t -> string
+val incoming_socket_type : _ t -> Socket_type.any
 
 type action = Data of Cstruct.t | Close of string
 

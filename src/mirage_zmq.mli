@@ -101,9 +101,11 @@ module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
   val recv : [> `Recv ] t -> string Lwt.t
   (** Receive a message from the socket, according to the semantics of the socket type. The returned promise is not resolved until a message is available. *)
 
+  val recv_multipart : [> `Recv ] t -> Message.t list Lwt.t
   val recv_from : [> `Recv_from ] t -> identity_and_data Lwt.t
-
   val send : [> `Send ] t -> string -> unit Lwt.t
+
+  val send_multipart : [> `Send ] t -> Message.t list -> unit Lwt.t
   (** Send a message to the connected peer(s), according to the semantics of the socket type. The returned promise is not resolved until the message enters the outgoing queue(s). *)
 
   val send_to : [> `Send_to ] t -> identity_and_data -> unit Lwt.t

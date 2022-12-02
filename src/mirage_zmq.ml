@@ -1510,57 +1510,7 @@ module Connection_tcp (S : Tcpip.Stack.V4V6) = struct
   let disconnect s = Lwt_switch.turn_off s
 end
 
-module Socket_tcp (S : Tcpip.Stack.V4V6) : sig
-  type 'p t
-
-  val create_socket :
-    Context.t ->
-    ?mechanism:Security_mechanism.mechanism_type ->
-    ('s, 'p) Socket_type.t ->
-    'p t
-  (** Create a socket from the given context, mechanism and type *)
-
-  val set_plain_credentials : _ t -> string -> string -> unit
-  (** Set username and password for PLAIN client *)
-
-  val set_plain_user_list : _ t -> (string * string) list -> unit
-  (** Set password list for PLAIN server *)
-
-  val set_identity : _ t -> string -> unit
-  (** Set identity string of a socket if applicable *)
-
-  val set_incoming_queue_size : _ t -> int -> unit
-  (** Set the maximum capacity of the incoming queue *)
-
-  val set_outgoing_queue_size : _ t -> int -> unit
-  (** Set the maximum capacity of the outgoing queue *)
-
-  val subscribe : [> `Sub ] t -> string -> unit
-  val unsubscribe : [> `Sub ] t -> string -> unit
-
-  val recv : [> `Recv ] t -> string Lwt.t
-  (** Receive a msg from the underlying connections, according to the  semantics of the socket type *)
-
-  val recv_from : [> `Recv_from ] t -> identity_and_data Lwt.t
-
-  val send : [> `Send ] t -> string -> unit Lwt.t
-  (** Send a msg to the underlying connections, according to the semantics of the socket type *)
-
-  val send_to : [> `Send_to ] t -> identity_and_data -> unit Lwt.t
-
-  val send_blocking : [> `Send ] t -> string -> unit Lwt.t
-  (** Send a msg to the underlying connections. It blocks until a peer is available *)
-
-  val bind : _ t -> int -> S.t -> unit
-  (** Bind a local TCP port to the socket so the socket will accept incoming connections *)
-
-  type flow
-
-  val connect : _ t -> string -> int -> S.t -> flow Lwt.t
-  (** Bind a connection to a remote TCP port to the socket *)
-
-  val disconnect : flow -> unit Lwt.t
-end = struct
+module Socket_tcp (S : Tcpip.Stack.V4V6) = struct
   (* type transport_info = Tcp of string * int
  *)
   type 'b t = U : ('a, 'b) Socket.t -> 'b t
@@ -1588,7 +1538,9 @@ end = struct
     Socket.unsubscribe socket subscription
 
   let recv (U socket) = Socket.recv socket
+  let recv_multipart (U socket) = Socket.recv_multipart socket
   let send (U socket) msg = Socket.send socket msg
+  let send_multipart (U socket) msg = Socket.send_multipart socket msg
   let recv_from (U socket) = Socket.recv_from socket
   let send_to (U socket) msg = Socket.send_to socket msg
   let send_blocking (U socket) msg = Socket.send_blocking socket msg
