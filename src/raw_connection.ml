@@ -148,7 +148,7 @@ let handle_handshake_actions (St t) action =
         in
         t.stage <- Handshake { hs with stage };
         None)
-      else None
+      else Some (Error (`Closed "Received an invalid socket type"))
   | ( Handshake ({ stage = H0 | H1 _; _ } as hs),
       Received_property ("Identity", value) ) ->
       let stage =
