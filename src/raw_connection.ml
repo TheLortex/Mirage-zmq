@@ -167,7 +167,7 @@ let handle_handshake_actions (St t) action =
   | Handshake _, Ok ->
       Log.err (fun f ->
           f "Module Connection: Got OK but not ready (missing socket type)");
-      assert false
+      Some (Error (`Closed "Got OK but not ready (missing socket type)"))
   | _ -> assert false
 
 let pipe_result_pair a b =
