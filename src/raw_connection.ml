@@ -254,8 +254,14 @@ let incoming_socket_type (St t) =
   | Traffic tr -> Socket_type.U tr.incoming_socket_type
   | _ -> invalid_arg "connection is not ready"
 
-let close_output (St t) = Pipe.close t.send_buffer "closed"
-let close_input (St t) = Pipe.close t.read_frame "closed"
+let close_output (St t) =
+  t.stage <- Close;
+  Pipe.close t.send_buffer "closed"
+
+let close_input (St t) =
+  t.stage <- Close;
+  Pipe.close t.read_frame "closed"
+
 let is_send_queue_full (St t) = Pipe.is_full t.send_buffer
 let serialize_message f = serialize_frame (Message.to_frame f)
 
@@ -263,3 +269,4 @@ let write (St t) msgs =
   List.map serialize_message msgs |> Pipe.push t.send_buffer
 
 let read (St t) = Pipe.pop t.read_frame
+let is_closed (St t) = t.stage == Close

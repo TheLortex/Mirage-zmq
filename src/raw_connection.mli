@@ -32,3 +32,4 @@ type action = Data of Cstruct.t | Close of string
 val input : _ t -> action -> Cstruct.t list Pipe.or_closed
 val output : _ t -> Cstruct.t list Pipe.or_closed Lwt.t
 val is_send_queue_full : _ t -> bool
+val is_closed : _ t -> bool

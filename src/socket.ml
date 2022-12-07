@@ -336,6 +336,11 @@ let handle_frame (type a s) (ty : (a, s) Socket_type.t) (v : a connection) frame
   | Rep, CSRep (Building lst) -> manage_rep lst v frame
   | _, _ -> manage_frame_message v frame
 
+let remove_connection t connection =
+  t.connections <-
+    List.filter (fun { conn; _ } -> conn != connection) t.connections;
+  Lwt_condition.broadcast t.connections_condition ()
+
 let add_connection t connection =
   let* ready = Raw_connection.wait_until_ready connection in
   if not ready then (* cancelled *)
@@ -382,9 +387,10 @@ let add_connection t connection =
                       (Printexc.to_string e));
                 raise e))
       (fun () ->
-        t.connections <-
-          List.filter (fun { conn; _ } -> conn != connection) t.connections;
-        Lwt_condition.broadcast t.connections_condition ();
+        (match v.frame_state with
+        | Message _ ->
+            () (* do nothing, the message getter will take care of it *)
+        | _ -> remove_connection t connection);
         Lwt.return_unit)
 
 (* RECV *)
@@ -440,10 +446,12 @@ let rec receive_message t =
         |> Lwt.choose
       in
       receive_message t
-  | Some (t, msg, cond) ->
-      t.frame_state <- Nothing;
-      Lwt_condition.broadcast cond ();
-      Lwt.return (t, msg)
+  | Some (c, msg, cond) ->
+      if Raw_connection.is_closed c.conn then remove_connection t c.conn
+      else (
+        c.frame_state <- Nothing;
+        Lwt_condition.broadcast cond ());
+      Lwt.return (c, msg)
 
 let rec receive_message_rep t =
   match
@@ -462,23 +470,27 @@ let rec receive_message_rep t =
         |> Lwt.choose
       in
       receive_message_rep t
-  | Some (t, msg, cond, CSRep (Ready envelope)) ->
-      t.frame_state <- Nothing;
-      t.conn_state <- CSRep (Building []);
-      Lwt_condition.broadcast cond ();
-      Lwt.return (t, envelope, msg)
+  | Some (c, msg, cond, CSRep (Ready envelope)) ->
+      if Raw_connection.is_closed c.conn then remove_connection t c.conn
+      else (
+        c.frame_state <- Nothing;
+        c.conn_state <- CSRep (Building []);
+        Lwt_condition.broadcast cond ());
+      Lwt.return (c, envelope, msg)
   | _ -> assert false
 
 (* TODO disconnect. *)
-let rec receive_message_conn c =
+let rec receive_message_conn t c =
   match c.frame_state with
   | Message msgs ->
-      c.frame_state <- Nothing;
-      Lwt_condition.broadcast c.cond ();
+      if Raw_connection.is_closed c.conn then remove_connection t c.conn
+      else (
+        c.frame_state <- Nothing;
+        Lwt_condition.broadcast c.cond ());
       Lwt.return msgs
   | _ ->
       let* () = Lwt_condition.wait c.cond in
-      receive_message_conn c
+      receive_message_conn t c
 
 let recv_multipart : type a. (a, [> `Recv ]) t -> Message.t list Lwt.t =
  fun t ->
@@ -501,7 +513,7 @@ let recv_multipart : type a. (a, [> `Recv ]) t -> Message.t list Lwt.t =
         let c =
           List.find (fun c -> Raw_connection.tag c.conn = tag) t.connections
         in
-        let+ msg = receive_message_conn c in
+        let+ msg = receive_message_conn t c in
         socket_state_update
           (SReq { if_sent = false; last_sent_connection_tag = "" });
         msg
@@ -514,12 +526,12 @@ let recv_multipart : type a. (a, [> `Recv ]) t -> Message.t list Lwt.t =
         let c =
           List.find (fun c -> Raw_connection.tag c.conn = tag) t.connections
         in
-        receive_message_conn c
+        receive_message_conn t c
   | SPair _ -> (
       match t.connections with
       | [] -> raise Not_found
       | _ :: _ :: _ -> assert false
-      | [ c ] -> receive_message_conn c)
+      | [ c ] -> receive_message_conn t c)
 
 let recv s =
   let+ msgs = recv_multipart s in
